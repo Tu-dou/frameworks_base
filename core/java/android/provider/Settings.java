@@ -3802,6 +3802,13 @@ public final class Settings {
          */
         public static final String KEYGUARD_TOGGLE_TORCH = "keyguard_toggle_torch";
 
+ 	/**
+         * Three Finger Gesture from Oppo
+         *
+         * @hide
+         */
+        public static final String THREE_FINGER_GESTURE = "three_finger_gesture";
+
         /**
          * Network traffic indicator, goes from least to greatest significant bitwise
          * 0 = Display up-stream traffic if set
