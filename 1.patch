@@ -1,0 +1,1866 @@
+From e76d2a578315bae72a51a1633aa8203b5b2ed7a9 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mikos <kiril.mik.os@gmail.com>
+Date: Thu, 14 Nov 2013 23:07:12 +0200
+Subject: [PATCH] Add EdgeGesture service
+
+[neo: Adapted for 7.1]
+Signed-off-by: Pranav Vashi <neobuddy89@gmail.com>
+---
+ Android.mk                                         |   3 +
+ core/java/android/provider/Settings.java           |   6 +
+ .../service/gesture/EdgeGestureManager.java        | 205 ++++++++
+ .../gesture/IEdgeGestureActivationListener.aidl    |  14 +
+ .../service/gesture/IEdgeGestureHostCallback.aidl  |  20 +
+ .../service/gesture/IEdgeGestureService.aidl       |  20 +
+ core/java/android/service/gesture/package.html     |   5 +
+ .../internal/util/gesture/EdgeGesturePosition.java |  42 ++
+ .../util/gesture/EdgeServiceConstants.java         |  82 ++++
+ core/res/res/values/cr_dimens.xml                  |  29 ++
+ core/res/res/values/sdhz150_config.xml             |   5 +
+ services/java/com/android/server/SystemServer.java |  18 +
+ .../server/gesture/EdgeGestureInputFilter.java     | 539 +++++++++++++++++++++
+ .../android/server/gesture/EdgeGestureService.java | 486 +++++++++++++++++++
+ .../android/server/gesture/EdgeGestureTracker.java | 252 ++++++++++
+ 16 files changed, 1806 insertions(+)
+ create mode 100644 core/java/android/service/gesture/EdgeGestureManager.java
+ create mode 100644 core/java/android/service/gesture/IEdgeGestureActivationListener.aidl
+ create mode 100644 core/java/android/service/gesture/IEdgeGestureHostCallback.aidl
+ create mode 100644 core/java/android/service/gesture/IEdgeGestureService.aidl
+ create mode 100644 core/java/android/service/gesture/package.html
+ create mode 100644 core/java/com/android/internal/util/gesture/EdgeGesturePosition.java
+ create mode 100644 core/java/com/android/internal/util/gesture/EdgeServiceConstants.java
+ create mode 100644 core/res/res/values/cr_dimens.xml
+ create mode 100644 services/java/com/android/server/gesture/EdgeGestureInputFilter.java
+ create mode 100644 services/java/com/android/server/gesture/EdgeGestureService.java
+ create mode 100644 services/java/com/android/server/gesture/EdgeGestureTracker.java
+
+diff --git a/Android.mk b/Android.mk
+index c6f78205..d626f0a 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -274,6 +274,9 @@ LOCAL_SRC_FILES += \
+ 	core/java/android/service/voice/IVoiceInteractionService.aidl \
+ 	core/java/android/service/voice/IVoiceInteractionSession.aidl \
+ 	core/java/android/service/voice/IVoiceInteractionSessionService.aidl \
++	core/java/android/service/gesture/IEdgeGestureService.aidl \
++	core/java/android/service/gesture/IEdgeGestureActivationListener.aidl \
++	core/java/android/service/gesture/IEdgeGestureHostCallback.aidl \
+ 	core/java/android/service/gesture/IGestureService.aidl \
+ 	core/java/android/service/wallpaper/IWallpaperConnection.aidl \
+ 	core/java/android/service/wallpaper/IWallpaperEngine.aidl \
+
+diff --git a/core/java/android/service/gesture/EdgeGestureManager.java b/core/java/android/service/gesture/EdgeGestureManager.java
+new file mode 100644
+index 0000000..7c0ab2e
+--- /dev/null
++++ b/core/java/android/service/gesture/EdgeGestureManager.java
+@@ -0,0 +1,205 @@
++/*
++ * Copyright (C) 2013 The CyanogenMod Project (Jens Doll)
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
++ * use this file except in compliance with the License. You may obtain a copy of
++ * the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++ * License for the specific language governing permissions and limitations under
++ * the License.
++ */
++package android.service.gesture;
++
++import android.os.Handler;
++import android.os.IBinder;
++import android.os.Looper;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.service.gesture.IEdgeGestureActivationListener;
++import android.service.gesture.IEdgeGestureHostCallback;
++import android.service.gesture.IEdgeGestureService;
++import android.util.Slog;
++
++import com.android.internal.util.gesture.EdgeGesturePosition;
++
++/**
++ * This is a simple Manager class for edge gesture service on the application side. The application need
++ * {@code INJECT_EVENTS} permission to register {@code EdgeGestureActivationListener}s.<br>
++ * See {@link android.service.gesture.IEdgeGestureService} for more information.
++ *
++ * @see android.service.gesture.IEdgeGestureService
++ * @hide
++ */
++public class EdgeGestureManager {
++    public static final String TAG = "EdgeGestureManager";
++    public static final boolean DEBUG = false;
++
++    private static EdgeGestureManager sInstance;
++
++    private final IEdgeGestureService mPs;
++
++    public static abstract class EdgeGestureActivationListener {
++        private Handler mHandler;
++        private IEdgeGestureHostCallback mCallback;
++
++        private class Delegator extends IEdgeGestureActivationListener.Stub {
++            public void onEdgeGestureActivation(final int touchX, final int touchY, final int positionIndex, final int flags)
++                    throws RemoteException {
++                mHandler.post(new Runnable() {
++                    public void run() {
++                        EdgeGestureActivationListener.this.onEdgeGestureActivation(touchX, touchY, EdgeGesturePosition.values()[positionIndex], flags);
++                    }
++                });
++            }
++        }
++        private Delegator mDelegator;
++
++        public EdgeGestureActivationListener() {
++            this(Looper.getMainLooper());
++        }
++
++        public EdgeGestureActivationListener(Looper looper) {
++            mHandler = new Handler(looper);
++            mDelegator = new Delegator();
++        }
++
++        /* package */ void setHostCallback(IEdgeGestureHostCallback hostCallback) {
++            mCallback = hostCallback;
++        }
++
++        /**
++         * Override this to receive activations from the edge gesture service.
++         *
++         * @param touchX the last X position a touch event was registered.
++         * @param touchY the last Y position a touch event was registered.
++         * @param position the position of the activation.
++         * @param flags currently 0.
++         * @see IEdgeGestureActivationListener#onEdgeGestureActivation(int, int, int, int)
++         */
++        public abstract void onEdgeGestureActivation(int touchX, int touchY, EdgeGesturePosition position, int flags);
++
++        /**
++         * After being activated, this allows the edge gesture control to steal focus from the current
++         * window.
++         *
++         * @see IEdgeGestureHostCallback#gainTouchFocus(IBinder)
++         */
++        public boolean gainTouchFocus(IBinder applicationWindowToken) {
++            try {
++                return mCallback.gainTouchFocus(applicationWindowToken);
++            } catch (RemoteException e) {
++                Slog.w(TAG, "gainTouchFocus failed: " + e.getMessage());
++                /* fall through */
++            }
++            return false;
++        }
++
++        public boolean dropEventsUntilLift() {
++            try {
++                return mCallback.dropEventsUntilLift();
++            } catch (RemoteException e) {
++                Slog.w(TAG, "dropNextEvents failed: " + e.getMessage());
++                /* fall through */
++            }
++            return false;
++        }
++
++        /**
++         * Turns listening for edge gesture activation gestures on again, after it was disabled during
++         * the call to the listener.
++         *
++         * @see IEdgeGestureHostCallback#restoreListenerState()
++         */
++        public void restoreListenerState() {
++            if (DEBUG) {
++                Slog.d(TAG, "restore listener state: " + Thread.currentThread().getName());
++            }
++            try {
++                mCallback.restoreListenerState();
++            } catch (RemoteException e) {
++                Slog.w(TAG, "restoreListenerState failed: " + e.getMessage());
++                /* fall through */
++            }
++        }
++    }
++
++    private EdgeGestureManager(IEdgeGestureService ps) {
++        mPs = ps;
++    }
++
++    /**
++     * Gets an instance of the edge gesture manager.
++     *
++     * @return The edge gesture manager instance.
++     * @hide
++     */
++    public static EdgeGestureManager getInstance() {
++        synchronized (EdgeGestureManager.class) {
++            if (sInstance == null) {
++                IBinder b = ServiceManager.getService("edgegestureservice");
++                sInstance = new EdgeGestureManager(IEdgeGestureService.Stub.asInterface(b));
++            }
++            return sInstance;
++        }
++    }
++
++    /**
++     * Checks if the edge gesture service is present.
++     * <p>
++     * Since the service is only started at boot time and is bound to the system server, this
++     * is constant for the devices up time.
++     *
++     * @return {@code true} when the edge gesture service is running on this device.
++     * @hide
++     */
++    public boolean isPresent() {
++        return mPs != null;
++    }
++
++    /**
++     * Register a listener for edge gesture activation gestures. Initially the listener
++     * is set to listen for no position. Use updateedge gestureActivationListener() to
++     * bind the listener to positions.
++     *
++     * @param listener is the activation listener.
++     * @return {@code true} if the registration was successful.
++     * @hide
++     */
++    public boolean setEdgeGestureActivationListener(EdgeGestureActivationListener listener) {
++        if (DEBUG) {
++            Slog.d(TAG, "Set edge gesture activation listener");
++        }
++        try {
++            IEdgeGestureHostCallback callback = mPs.registerEdgeGestureActivationListener(listener.mDelegator);
++            listener.setHostCallback(callback);
++            return true;
++        } catch (RemoteException e) {
++            Slog.e(TAG, "Failed to set edge gesture activation listener: " + e.getMessage());
++            return false;
++        }
++    }
++
++    /**
++     * Update the listener to react on gestures in the given positions.
++     *
++     * @param listener is a already registered listener.
++     * @param positions is a bit mask describing the positions to listen to.
++     * @hide
++     */
++    public void updateEdgeGestureActivationListener(EdgeGestureActivationListener listener, int positions) {
++        if (DEBUG) {
++            Slog.d(TAG, "Update edge gesture activation listener: 0x" + Integer.toHexString(positions));
++        }
++        try {
++            mPs.updateEdgeGestureActivationListener(listener.mDelegator.asBinder(), positions);
++        } catch (RemoteException e) {
++            Slog.e(TAG, "Failed to update edge gesture activation listener: " + e.getMessage());
++        }
++    }
++
++}
+diff --git a/core/java/android/service/gesture/IEdgeGestureActivationListener.aidl b/core/java/android/service/gesture/IEdgeGestureActivationListener.aidl
+new file mode 100644
+index 0000000..0c9b24a
+--- /dev/null
++++ b/core/java/android/service/gesture/IEdgeGestureActivationListener.aidl
+@@ -0,0 +1,14 @@
++
++package android.service.gesture;
++
++import android.view.InputEvent;
++
++/** @hide */
++interface IEdgeGestureActivationListener {
++
++    /** Called when a gesture is detected that fits to the activation gesture. At this point in
++     * time gesture detection is disabled. Call IEdgeGestureHostCallback.restoreState() to
++     * recover from this.
++     */
++    oneway void onEdgeGestureActivation(int touchX, int touchY, int positionIndex, int flags);
++}
+\ No newline at end of file
+diff --git a/core/java/android/service/gesture/IEdgeGestureHostCallback.aidl b/core/java/android/service/gesture/IEdgeGestureHostCallback.aidl
+new file mode 100644
+index 0000000..c261550
+--- /dev/null
++++ b/core/java/android/service/gesture/IEdgeGestureHostCallback.aidl
+@@ -0,0 +1,20 @@
++package android.service.gesture;
++
++/** @hide */
++interface IEdgeGestureHostCallback {
++
++    /** After being activated, this allows to steal focus from the current
++     * window
++     */
++    boolean gainTouchFocus(IBinder windowToken);
++
++    /** Turns listening for activation gestures on again, after it was disabled during
++     * the call to the listener.
++     */
++    oneway void restoreListenerState();
++
++    /*
++     * Tells filter to drop all events till touch up
++     */
++    boolean dropEventsUntilLift();
++}
+\ No newline at end of file
+diff --git a/core/java/android/service/gesture/IEdgeGestureService.aidl b/core/java/android/service/gesture/IEdgeGestureService.aidl
+new file mode 100644
+index 0000000..342cf71
+--- /dev/null
++++ b/core/java/android/service/gesture/IEdgeGestureService.aidl
+@@ -0,0 +1,20 @@
++package android.service.gesture;
++
++import android.service.gesture.IEdgeGestureActivationListener;
++import android.service.gesture.IEdgeGestureHostCallback;
++
++/** @hide */
++interface IEdgeGestureService {
++
++    /** Register a listener for activation gestures. Initially the listener
++     * is set to listen for no position. Use updateEdgeGestureActivationListener() to
++     * bind the listener to positions.
++     * Use the returned IEdgeGestureHostCallback to manipulate the state after activation.
++     */
++    IEdgeGestureHostCallback registerEdgeGestureActivationListener(in IEdgeGestureActivationListener listener);
++
++    /** Update the listener to react on gestures in the given positions.
++     */
++    void updateEdgeGestureActivationListener(in IBinder listener, int positionFlags);
++
++}
+\ No newline at end of file
+diff --git a/core/java/android/service/gesture/package.html b/core/java/android/service/gesture/package.html
+new file mode 100644
+index 0000000..c9f96a6
+--- /dev/null
++++ b/core/java/android/service/gesture/package.html
+@@ -0,0 +1,5 @@
++<body>
++
++{@hide}
++
++</body>
+diff --git a/core/java/com/android/internal/util/gesture/EdgeGesturePosition.java b/core/java/com/android/internal/util/gesture/EdgeGesturePosition.java
+new file mode 100644
+index 0000000..01cfdea
+--- /dev/null
++++ b/core/java/com/android/internal/util/gesture/EdgeGesturePosition.java
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (C) 2013 The CyanogenMod Project (Jens Doll)
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
++ * use this file except in compliance with the License. You may obtain a copy of
++ * the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++ * License for the specific language governing permissions and limitations under
++ * the License.
++ */
++package com.android.internal.util.gesture;
++
++/**
++ * Defines the positions in which gestures may be recognized by the
++ * edge gesture service.
++ * This defines an index and an flag for each position.
++ */
++public enum EdgeGesturePosition {
++    LEFT(0, 0),
++    BOTTOM(1, 1),
++    RIGHT(2, 1),
++    TOP(3, 0);
++
++    EdgeGesturePosition(int index, int factor) {
++        INDEX = index;
++        FLAG = (0x01<<index);
++        FACTOR = factor;
++    }
++
++    public final int INDEX;
++    public final int FLAG;
++    /**
++     * This is 1 when the position is not at the axis (like {@link EdgeGesturePosition.RIGHT} is
++     * at {@code Layout.getWidth()} not at {@code 0}).
++     */
++    public final int FACTOR;
++}
+diff --git a/core/java/com/android/internal/util/gesture/EdgeServiceConstants.java b/core/java/com/android/internal/util/gesture/EdgeServiceConstants.java
+new file mode 100644
+index 0000000..12f419f
+--- /dev/null
++++ b/core/java/com/android/internal/util/gesture/EdgeServiceConstants.java
+@@ -0,0 +1,82 @@
++/*
++ * Copyright (C) 2013 The CyanogenMod Project (Jens Doll)
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
++ * use this file except in compliance with the License. You may obtain a copy of
++ * the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++ * License for the specific language governing permissions and limitations under
++ * the License.
++ */
++package com.android.internal.util.gesture;
++
++/**
++ * Constants needed for the edge gesture service.
++ *
++ * @see com.android.internal.util.gesture.EdgeGesturePosition
++ */
++public final class EdgeServiceConstants {
++
++    private EdgeServiceConstants() {
++        // no object allowed
++    }
++
++    /**
++     * Mask for coding positions within the flags of
++     * {@code updateEdgeGestureActivationListener()}.
++     * <p>
++     * Positions are specified by {@code EdgeGesturePosition.FLAG}.
++     */
++    public static final int POSITION_MASK = 0x0000001f;
++
++    /**
++     * Mask for coding sensitivity within the flags of
++     * {@code updateEdgeGestureActivationListener()}.
++     * <p>
++     * Sensitivity influences the speed of the swipe, the trigger area, and trigger distance that
++     * is needed to activate the edge gesture.
++     */
++    public static final int SENSITIVITY_MASK = 0xf0000000;
++
++    /**
++     * Number of bits to shift left, to get a integer within the {@link #SENSITIVITY_MASK}.
++     */
++    public static final int SENSITIVITY_SHIFT = 28;
++
++    /**
++     * No sensitivity specified at all, the service may choose a sensitivity level on its own.
++     */
++    public static final int SENSITIVITY_NONE = 0;
++
++    /**
++     * Default sensitivity, picked by the edge gesture service automatically.
++     */
++    public static final int SENSITIVITY_DEFAULT = 5;
++
++    /**
++     * Lowest valid sensitivity value.
++     */
++    public static final int SENSITIVITY_LOWEST = 1;
++
++    /**
++     * Highest sensitivity value.
++     */
++    public static final int SENSITIVITY_HIGHEST = 10;
++
++    /**
++     * Do not cut 10% area on th edges
++     */
++    public static final int UNRESTRICTED = 0x10;
++
++    /**
++     * This listener does not likes enabling/disabling filter
++     * because it interrupt in motion events.
++     */
++    public static final int LONG_LIVING = 0x20;
++
++}
+diff --git a/core/res/res/values/cr_dimens.xml b/core/res/res/values/cr_dimens.xml
+new file mode 100644
+index 0000000..9130fcbd
+--- /dev/null
++++ b/core/res/res/values/cr_dimens.xml
+@@ -0,0 +1,29 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2016 crDroid Android Project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
++
++   <!-- EdgeGesture service: Distance a swipe must travel to be recognized as swipe. -->
++    <dimen name="edge_gesture_trigger_distance">12dp</dimen>
++
++    <!-- EdgeGesture service: This is the distance a swipe can travel orthogonally to its actual swipe
++         direction to be still recognized as swipe. -->
++    <dimen name="edge_gesture_perpendicular_distance">22dp</dimen>
++
++    <!-- EdgeGesture service: Thickness of the active trigger fields around the screen border -->
++    <dimen name="edge_gesture_trigger_thickness">15dp</dimen>
++
++</resources>
+
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+index 25957cb..865ea9d 100644
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -72,6 +72,7 @@
+ import com.android.server.dreams.DreamManagerService;
+ import com.android.server.fingerprint.FingerprintService;
+ import com.android.server.hdmi.HdmiControlService;
++import com.android.server.gesture.EdgeGestureService;
+ import com.android.server.gesture.GestureService;
+ import com.android.server.input.InputManagerService;
+ import com.android.server.job.JobSchedulerService;
+@@ -715,6 +716,7 @@ private void startOtherServices() {
+         ILockSettings lockSettings = null;
+         AssetAtlasService atlas = null;
+         MediaRouterService mediaRouter = null;
++        EdgeGestureService edgeGestureService = null;
+         GestureService gestureService = null;
+ 
+         // Bring up services needed for UI.
+@@ -1239,6 +1241,14 @@ private void startOtherServices() {
+             mSystemServiceManager.startService(ShortcutService.Lifecycle.class);
+ 
+             mSystemServiceManager.startService(LauncherAppsService.class);
++
++            try {
++                Slog.i(TAG, "EdgeGesture service");
++                edgeGestureService = new EdgeGestureService(context, inputManager);
++                ServiceManager.addService("edgegestureservice", edgeGestureService);
++            } catch (Throwable e) {
++                Slog.e(TAG, "Failure starting EdgeGesture service", e);
++            }
+         }
+ 
+         if (!disableNonCoreServices && !disableMediaProjection) {
+@@ -1399,6 +1409,14 @@ private void startOtherServices() {
+         }
+         Trace.traceEnd(Trace.TRACE_TAG_SYSTEM_SERVER);
+ 
++        if (edgeGestureService != null) {
++            try {
++                edgeGestureService.systemReady();
++            } catch (Throwable e) {
++                reportWtf("making EdgeGesture service ready", e);
++            }
++        }
++
+         if (gestureService != null) {
+             try {
+                 gestureService.systemReady();
+diff --git a/services/java/com/android/server/gesture/EdgeGestureInputFilter.java b/services/java/com/android/server/gesture/EdgeGestureInputFilter.java
+new file mode 100644
+index 0000000..c42b7d0
+--- /dev/null
++++ b/services/java/com/android/server/gesture/EdgeGestureInputFilter.java
+@@ -0,0 +1,539 @@
++/*
++ * Copyright (C) 2013 The CyanogenMod Project (Jens Doll)
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
++ * use this file except in compliance with the License. You may obtain a copy of
++ * the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++ * License for the specific language governing permissions and limitations under
++ * the License.
++ */
++package com.android.server.gesture;
++
++import android.content.Context;
++import android.content.res.Resources;
++import android.os.Handler;
++import android.os.IBinder;
++import android.os.RemoteException;
++import android.os.SystemClock;
++import android.os.Trace;
++import android.util.Slog;
++import android.view.Display;
++import android.view.DisplayInfo;
++import android.view.IInputFilter;
++import android.view.IInputFilterHost;
++import android.view.InputDevice;
++import android.view.InputEvent;
++import android.view.MotionEvent;
++import android.view.WindowManagerPolicy;
++import android.view.MotionEvent.PointerCoords;
++import android.view.MotionEvent.PointerProperties;
++
++import com.android.internal.R;
++import com.android.internal.util.gesture.EdgeGesturePosition;
++import com.android.server.gesture.EdgeGestureTracker.OnActivationListener;
++
++import java.io.PrintWriter;
++
++/**
++ * A simple input filter, that listens for edge swipe gestures in the motion event input
++ * stream.
++ * <p>
++ * There are 5 distinct states of this filter.
++ * 1) LISTEN:
++ *    mTracker.active == false
++ *    All motion events are passed through. If a ACTION_DOWN within a gesture trigger area happen
++ *    switch to DETECTING.
++ * 2) DETECTING:
++ *    mTracker.active == true
++ *    All events are buffered now, and the gesture is checked by mTracker. If mTracker rejects
++ *    the gesture (hopefully as fast as possible) all cached events will be flushed out and the
++ *    filter falls back to LISTEN.
++ *    If mTracker accepts the gesture, clear all cached events and go to LOCKED.
++ * 3) LOCKED:
++ *    mTracker.active == false
++ *    All events will be cached until the state changes to SYNTHESIZE through a filter
++ *    unlock event. If there is a ACTION_UP, _CANCEL or any PointerId differently to the last
++ *    event seen when mTracker accepted the gesture, we flush all events and go to LISTEN.
++ * 4) SYNTHESIZE:
++ *    The first motion event found will be turned into a ACTION_DOWN event, all previous events
++ *    will be discarded.
++ * 5) POSTSYNTHESIZE:
++ *    mSyntheticDownTime != -1
++ *    All following events will have the down time set to the synthesized ACTION_DOWN event time
++ *    until an ACTION_UP or ACTION_CANCEL is encountered and the state is reset to LISTEN.
++ * 6) DROP:
++ *    All following events will be discarded. If there is an ACTION_UP, _CANCEL
++ *    we go to LISTEN state.
++ * <p>
++ * If you are reading this within Java Doc, you are doing something wrong ;)
++ */
++public class EdgeGestureInputFilter implements IInputFilter {
++    /* WARNING!! The IInputFilter interface is used directly, there is no Binder between this and
++     * the InputDispatcher.
++     * This is fine, because it prevents unnecessary parceling, but beware:
++     * This means we are running on the dispatch or listener thread of the input dispatcher. Every
++     * cycle we waste here adds to the overall input latency.
++     */
++    private static final String TAG = "EdgeGestureInputFilter";
++    private static final boolean DEBUG = false;
++    private static final boolean DEBUG_INPUT = false;
++    // TODO: Should be turned off in final commit
++    private static final boolean SYSTRACE = false;
++
++    private final Handler mHandler;
++
++    private IInputFilterHost mHost = null; // dispatcher thread
++
++    private static final class MotionEventInfo {
++        private static final int MAX_POOL_SIZE = 16;
++
++        private static final Object sLock = new Object();
++        private static MotionEventInfo sPool;
++        private static int sPoolSize;
++
++        private boolean mInPool;
++
++        public static MotionEventInfo obtain(MotionEvent event, int policyFlags) {
++            synchronized (sLock) {
++                MotionEventInfo info;
++                if (sPoolSize > 0) {
++                    sPoolSize--;
++                    info = sPool;
++                    sPool = info.next;
++                    info.next = null;
++                    info.mInPool = false;
++                } else {
++                    info = new MotionEventInfo();
++                }
++                info.initialize(event, policyFlags);
++                return info;
++            }
++        }
++
++        private void initialize(MotionEvent event, int policyFlags) {
++            this.event = MotionEvent.obtain(event);
++            this.policyFlags = policyFlags;
++            cachedTimeMillis = SystemClock.uptimeMillis();
++        }
++
++        public void recycle() {
++            synchronized (sLock) {
++                if (mInPool) {
++                    throw new IllegalStateException("Already recycled.");
++                }
++                clear();
++                if (sPoolSize < MAX_POOL_SIZE) {
++                    sPoolSize++;
++                    next = sPool;
++                    sPool = this;
++                    mInPool = true;
++                }
++            }
++        }
++
++        private void clear() {
++            event.recycle();
++            event = null;
++            policyFlags = 0;
++        }
++
++        public MotionEventInfo next;
++        public MotionEvent event;
++        public int policyFlags;
++        public long cachedTimeMillis;
++    }
++    private final Object mLock = new Object();
++    private MotionEventInfo mMotionEventQueue; // guarded by mLock
++    private MotionEventInfo mMotionEventQueueTail; // guarded by mLock
++    /* DEBUG */
++    private int mMotionEventQueueCountDebug; // guarded by mLock
++
++    private int mDeviceId; // dispatcher only
++    private enum State {
++        LISTEN, DETECTING, LOCKED, SYNTHESIZE, POSTSYNTHESIZE, DROP;
++    }
++    private State mState = State.LISTEN; // guarded by mLock
++    private EdgeGestureTracker mTracker; // guarded by mLock
++    private volatile int mPositions; // written by handler / read by dispatcher
++    private volatile int mSensitivity; // written by handler / read by dispatcher
++
++    // only used by dispatcher
++    private long mSyntheticDownTime = -1;
++    private PointerCoords[] mTempPointerCoords = new PointerCoords[1];
++    private PointerProperties[] mTempPointerProperties = new PointerProperties[1];
++
++    public EdgeGestureInputFilter(Context context, Handler handler) {
++        mHandler = handler;
++
++        final Resources res = context.getResources();
++        mTracker = new EdgeGestureTracker(res.getDimensionPixelSize(
++                R.dimen.edge_gesture_trigger_thickness),
++                res.getDimensionPixelSize(R.dimen.edge_gesture_trigger_distance),
++                res.getDimensionPixelSize(R.dimen.edge_gesture_perpendicular_distance));
++        mTracker.setOnActivationListener(new OnActivationListener() {
++            public void onActivation(MotionEvent event, int touchX, int touchY, EdgeGesturePosition position) {
++                // mLock is held by #processMotionEvent
++                mHandler.obtainMessage(EdgeGestureService.MSG_EDGE_GESTURE_ACTIVATION,
++                        touchX, touchY, position).sendToTarget();
++                mState = State.LOCKED;
++            }
++        });
++        mTempPointerCoords[0] = new PointerCoords();
++        mTempPointerProperties[0] = new PointerProperties();
++    }
++
++    // called from handler thread (lock taken)
++    public void updateDisplay(Display display, DisplayInfo displayInfo) {
++        synchronized (mLock) {
++            mTracker.updateDisplay(display);
++        }
++    }
++
++    // called from handler thread (lock taken)
++    public void updatePositions(int positions) {
++        mPositions = positions;
++    }
++
++    // called from handler thread (lock taken)
++    public void updateSensitivity(int sensitivity) {
++        mSensitivity = sensitivity;
++    }
++
++    // called from handler thread
++    public boolean unlockFilter() {
++        synchronized (mLock) {
++            if (mState == State.LOCKED) {
++                mState = State.SYNTHESIZE;
++                return true;
++            }
++        }
++        return false;
++    }
++
++    public boolean dropSequence() {
++        synchronized (mLock) {
++            if (mState == State.LOCKED) {
++                mState = State.DROP;
++                return true;
++            }
++        }
++        return false;
++    }
++
++    /**
++     * Called to enqueue the input event for filtering.
++     * The event must be recycled after the input filter processed it.
++     * This method is guaranteed to be non-reentrant.
++     *
++     * @see InputFilter#filterInputEvent(InputEvent, int)
++     * @param event The input event to enqueue.
++     */
++    // called by the input dispatcher thread
++    public void filterInputEvent(InputEvent event, int policyFlags) throws RemoteException {
++        if (SYSTRACE) {
++            Trace.traceBegin(Trace.TRACE_TAG_INPUT, "filterInputEvent");
++        }
++        try {
++            if (((event.getSource() & InputDevice.SOURCE_TOUCHSCREEN)
++                 != InputDevice.SOURCE_TOUCHSCREEN)
++                    || !(event instanceof MotionEvent)) {
++                sendInputEvent(event, policyFlags);
++                return;
++            }
++            if (DEBUG_INPUT) {
++                Slog.d(TAG, "Received event: " + event + ", policyFlags=0x"
++                        + Integer.toHexString(policyFlags));
++            }
++            MotionEvent motionEvent = (MotionEvent) event;
++            final int deviceId = event.getDeviceId();
++            if (deviceId != mDeviceId) {
++                processDeviceSwitch(deviceId, motionEvent, policyFlags);
++            } else {
++                if ((policyFlags & WindowManagerPolicy.FLAG_PASS_TO_USER) == 0) {
++                    synchronized (mLock) {
++                        clearAndResetStateLocked(false, true);
++                    }
++                }
++                processMotionEvent(motionEvent, policyFlags);
++            }
++        } finally {
++            event.recycle();
++            if (SYSTRACE) {
++                Trace.traceEnd(Trace.TRACE_TAG_INPUT);
++            }
++        }
++    }
++
++    private void processDeviceSwitch(int deviceId, MotionEvent motionEvent, int policyFlags) {
++        if (motionEvent.getActionMasked() == MotionEvent.ACTION_DOWN) {
++            mDeviceId = deviceId;
++            synchronized (mLock) {
++                clearAndResetStateLocked(true, false);
++                processMotionEvent(motionEvent, policyFlags);
++            }
++        } else {
++            sendInputEvent(motionEvent, policyFlags);
++        }
++    }
++
++    private void processMotionEvent(MotionEvent motionEvent, int policyFlags) {
++        final int action = motionEvent.getActionMasked();
++
++        synchronized (mLock) {
++            switch (mState) {
++                case LISTEN:
++                    if (action ==  MotionEvent.ACTION_DOWN) {
++                        boolean hit = mPositions != 0
++                                && mTracker.start(motionEvent, mPositions, mSensitivity);
++                        if (DEBUG) Slog.d(TAG, "start:" + hit);
++                        if (hit) {
++                            // cache the down event
++                            cacheDelayedMotionEventLocked(motionEvent, policyFlags);
++                            mState = State.DETECTING;
++                            return;
++                        }
++                    }
++                    sendInputEvent(motionEvent, policyFlags);
++                    break;
++                case DETECTING:
++                    cacheDelayedMotionEventLocked(motionEvent, policyFlags);
++                    if (action == MotionEvent.ACTION_MOVE) {
++                        if (mTracker.move(motionEvent)) {
++                            // return: the tracker is either detecting or triggered onActivation
++                            return;
++                        }
++                    }
++                    if (DEBUG) {
++                        Slog.d(TAG, "move: reset!");
++                    }
++                    clearAndResetStateLocked(false, true);
++                    break;
++                case LOCKED:
++                    cacheDelayedMotionEventLocked(motionEvent, policyFlags);
++                    if (action != MotionEvent.ACTION_MOVE) {
++                        clearAndResetStateLocked(false, true);
++                    }
++                    break;
++                case SYNTHESIZE:
++                    if (action == MotionEvent.ACTION_MOVE) {
++                        clearDelayedMotionEventsLocked();
++                        sendSynthesizedMotionEventLocked(motionEvent, policyFlags);
++                        mState = State.POSTSYNTHESIZE;
++                    } else {
++                        // This is the case where a race condition caught us: We already
++                        // returned the handler thread that it is all right to call
++                        // #gainTouchFocus(), but apparently this was wrong, as the gesture
++                        // was canceled now.
++                        clearAndResetStateLocked(false, true);
++                    }
++                    break;
++                case POSTSYNTHESIZE:
++                    motionEvent.setDownTime(mSyntheticDownTime);
++                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
++                        mState = State.LISTEN;
++                        mSyntheticDownTime = -1;
++                    }
++                    sendInputEvent(motionEvent, policyFlags);
++                    break;
++                case DROP:
++                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
++                        clearDelayedMotionEventsLocked();
++                        mState = State.LISTEN;
++                    }
++                    break;
++            }
++        }
++    }
++
++    private void clearAndResetStateLocked(boolean force, boolean shift) {
++        // ignore soft reset in POSTSYNTHESIZE, because we need to tamper with
++        // the event stream and going to LISTEN after an ACTION_UP anyway
++        if (!force && (mState == State.POSTSYNTHESIZE)) {
++            return;
++        }
++        switch (mState) {
++            case LISTEN:
++                // this is a nop
++                break;
++            case DETECTING:
++                mTracker.reset();
++                // intentionally no break here
++            case LOCKED:
++            case SYNTHESIZE:
++                sendDelayedMotionEventsLocked(shift);
++                break;
++            case POSTSYNTHESIZE:
++                // hard reset (this will break the event stream)
++                Slog.w(TAG, "Quit POSTSYNTHESIZE without ACTION_UP from ACTION_DOWN at "
++                        + mSyntheticDownTime);
++                mSyntheticDownTime = -1;
++                break;
++        }
++        // if there are future events that need to be tampered with, goto POSTSYNTHESIZE
++        mState = mSyntheticDownTime == -1 ? State.LISTEN : State.POSTSYNTHESIZE;
++    }
++
++    private void sendInputEvent(InputEvent event, int policyFlags) {
++        try {
++            mHost.sendInputEvent(event, policyFlags);
++        } catch (RemoteException e) {
++            /* ignore */
++        }
++    }
++
++    private void cacheDelayedMotionEventLocked(MotionEvent event, int policyFlags) {
++        MotionEventInfo info = MotionEventInfo.obtain(event, policyFlags);
++        if (mMotionEventQueue == null) {
++            mMotionEventQueue = info;
++        } else {
++            mMotionEventQueueTail.next = info;
++        }
++        mMotionEventQueueTail = info;
++        mMotionEventQueueCountDebug++;
++        if (SYSTRACE) {
++            Trace.traceCounter(Trace.TRACE_TAG_INPUT, "meq", mMotionEventQueueCountDebug);
++        }
++    }
++
++    private void sendDelayedMotionEventsLocked(boolean shift) {
++        while (mMotionEventQueue != null) {
++            MotionEventInfo info = mMotionEventQueue;
++            mMotionEventQueue = info.next;
++
++            if (DEBUG) {
++                Slog.d(TAG, "Replay event: " + info.event);
++            }
++            mMotionEventQueueCountDebug--;
++            if (SYSTRACE) {
++                Trace.traceCounter(Trace.TRACE_TAG_INPUT, "meq", mMotionEventQueueCountDebug);
++            }
++            if (shift) {
++                final long offset = SystemClock.uptimeMillis() - info.cachedTimeMillis;
++                if (info.event.getActionMasked() == MotionEvent.ACTION_DOWN) {
++                    mSyntheticDownTime = info.event.getDownTime() + offset;
++                }
++                sendMotionEventWithOffsetLocked(info.event, info.policyFlags, mSyntheticDownTime, offset);
++                if (info.event.getActionMasked() == MotionEvent.ACTION_UP) {
++                    mSyntheticDownTime = -1;
++                }
++            } else {
++                sendInputEvent(info.event, info.policyFlags);
++            }
++            info.recycle();
++        }
++        mMotionEventQueueTail = null;
++    }
++
++    private void clearDelayedMotionEventsLocked() {
++        while (mMotionEventQueue != null) {
++            MotionEventInfo next = mMotionEventQueue.next;
++            mMotionEventQueue.recycle();
++            mMotionEventQueue = next;
++        }
++        mMotionEventQueueTail = null;
++        mMotionEventQueueCountDebug = 0;
++        if (SYSTRACE) {
++            Trace.traceCounter(Trace.TRACE_TAG_INPUT, "meq", mMotionEventQueueCountDebug);
++        }
++    }
++
++    private void sendMotionEventWithOffsetLocked(MotionEvent event, int policyFlags,
++            long downTime, long offset) {
++        final int pointerCount = event.getPointerCount();
++        PointerCoords[] coords = getTempPointerCoordsWithMinSizeLocked(pointerCount);
++        PointerProperties[] properties = getTempPointerPropertiesWithMinSizeLocked(pointerCount);
++        for (int i = 0; i < pointerCount; i++) {
++            event.getPointerCoords(i, coords[i]);
++            event.getPointerProperties(i, properties[i]);
++        }
++        final long eventTime = event.getEventTime() + offset;
++        sendInputEvent(MotionEvent.obtain(downTime, eventTime, event.getAction(), pointerCount,
++                properties, coords, event.getMetaState(), event.getButtonState(), 1.0f, 1.0f,
++                event.getDeviceId(), event.getEdgeFlags(), event.getSource(), event.getFlags()),
++                policyFlags);
++    }
++
++    private PointerCoords[] getTempPointerCoordsWithMinSizeLocked(int size) {
++        final int oldSize = mTempPointerCoords.length;
++        if (oldSize < size) {
++            PointerCoords[] oldTempPointerCoords = mTempPointerCoords;
++            mTempPointerCoords = new PointerCoords[size];
++            System.arraycopy(oldTempPointerCoords, 0, mTempPointerCoords, 0, oldSize);
++        }
++        for (int i = oldSize; i < size; i++) {
++            mTempPointerCoords[i] = new PointerCoords();
++        }
++        return mTempPointerCoords;
++    }
++
++    private PointerProperties[] getTempPointerPropertiesWithMinSizeLocked(int size) {
++        final int oldSize = mTempPointerProperties.length;
++        if (oldSize < size) {
++            PointerProperties[] oldTempPointerProperties = mTempPointerProperties;
++            mTempPointerProperties = new PointerProperties[size];
++            System.arraycopy(oldTempPointerProperties, 0, mTempPointerProperties, 0, oldSize);
++        }
++        for (int i = oldSize; i < size; i++) {
++            mTempPointerProperties[i] = new PointerProperties();
++        }
++        return mTempPointerProperties;
++    }
++
++    private void sendSynthesizedMotionEventLocked(MotionEvent event, int policyFlags) {
++        if (event.getPointerCount() == 1) {
++            event.getPointerCoords(0, mTempPointerCoords[0]);
++            event.getPointerProperties(0, mTempPointerProperties[0]);
++            MotionEvent down = MotionEvent.obtain(event.getEventTime(), event.getEventTime(),
++                    MotionEvent.ACTION_DOWN, 1, mTempPointerProperties, mTempPointerCoords,
++                    event.getMetaState(), event.getButtonState(),
++                    1.0f, 1.0f, event.getDeviceId(), event.getEdgeFlags(),
++                    event.getSource(), event.getFlags());
++            Slog.d(TAG, "Synthesized event:" + down);
++            sendInputEvent(down, policyFlags);
++            mSyntheticDownTime = event.getEventTime();
++        } else {
++            Slog.w(TAG, "Could not synthesize MotionEvent, this will drop all following events!");
++        }
++    }
++
++    // should never be called
++    public IBinder asBinder() {
++        throw new UnsupportedOperationException();
++    }
++
++    // called by the input dispatcher thread
++    public void install(IInputFilterHost host) throws RemoteException {
++        if (DEBUG) {
++            Slog.d(TAG, "EdgeGesture input filter installed.");
++        }
++        mHost = host;
++        synchronized (mLock) {
++            clearAndResetStateLocked(true, false);
++        }
++    }
++
++    // called by the input dispatcher thread
++    public void uninstall() throws RemoteException {
++        if (DEBUG) {
++            Slog.d(TAG, "EdgeGesture input filter uninstalled.");
++        }
++    }
++
++    // called by a Binder thread
++    public void dump(PrintWriter pw, String prefix) {
++        synchronized (mLock) {
++            pw.print(prefix);
++            pw.println("mState=" + mState.name());
++            pw.print(prefix);
++            pw.println("mPositions=0x" + Integer.toHexString(mPositions));
++            pw.print(prefix);
++            pw.println("mQueue=" + mMotionEventQueueCountDebug + " items");
++        }
++    }
++}
+diff --git a/services/java/com/android/server/gesture/EdgeGestureService.java b/services/java/com/android/server/gesture/EdgeGestureService.java
+new file mode 100644
+index 0000000..fe8e858
+--- /dev/null
++++ b/services/java/com/android/server/gesture/EdgeGestureService.java
+@@ -0,0 +1,486 @@
++/*
++ * Copyright (C) 2013 The CyanogenMod Project (Jens Doll)
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
++ * use this file except in compliance with the License. You may obtain a copy of
++ * the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++ * License for the specific language governing permissions and limitations under
++ * the License.
++ */
++package com.android.server.gesture;
++
++import static com.android.internal.util.gesture.EdgeServiceConstants.POSITION_MASK;
++import static com.android.internal.util.gesture.EdgeServiceConstants.SENSITIVITY_DEFAULT;
++import static com.android.internal.util.gesture.EdgeServiceConstants.SENSITIVITY_MASK;
++import static com.android.internal.util.gesture.EdgeServiceConstants.SENSITIVITY_NONE;
++import static com.android.internal.util.gesture.EdgeServiceConstants.SENSITIVITY_SHIFT;
++import static com.android.internal.util.gesture.EdgeServiceConstants.LONG_LIVING;
++
++import android.Manifest;
++import android.content.Context;
++import android.content.pm.PackageManager;
++import android.hardware.display.DisplayManager;
++import android.hardware.display.DisplayManager.DisplayListener;
++import android.os.Binder;
++import android.os.Handler;
++import android.os.HandlerThread;
++import android.os.IBinder;
++import android.os.Looper;
++import android.os.Message;
++import android.os.Parcel;
++import android.os.RemoteException;
++import android.service.gesture.IEdgeGestureActivationListener;
++import android.service.gesture.IEdgeGestureHostCallback;
++import android.service.gesture.IEdgeGestureService;
++import android.util.Slog;
++import android.view.Display;
++import android.view.DisplayInfo;
++import android.view.WindowManager;
++
++import com.android.internal.util.gesture.EdgeGesturePosition;
++import com.android.server.gesture.EdgeGestureInputFilter;
++import com.android.server.input.InputManagerService;
++
++import java.io.FileDescriptor;
++import java.io.PrintWriter;
++import java.util.ArrayList;
++import java.util.List;
++
++/**
++ * A system service to track and handle edge swipe gestures. This service interacts with
++ * the {@link InputManagerService} to do all the dirty work for listeners:
++ * <li>Installing an input filter and listen for edge swipe gestures</li>
++ * <li>Removing those gestures from the input stream</li>
++ * <li>Transferring touch focus to new recipient</li>
++ */
++public class EdgeGestureService extends IEdgeGestureService.Stub {
++    public static final String TAG = "EdgeGestureService";
++    public static final boolean DEBUG = false;
++    public static final boolean DEBUG_INPUT = false;
++
++    public static final int MSG_EDGE_GESTURE_ACTIVATION = 32023;
++    public static final int MSG_UPDATE_SERVICE = 32025;
++
++    private final Context mContext;
++    private final InputManagerService mInputManager;
++
++    private final HandlerThread mHandlerThread = new HandlerThread("EdgeGestureHandler");
++    private Handler mHandler;
++
++    // Lock for mInputFilter, activations and listener related variables
++    private final Object mLock = new Object();
++    private EdgeGestureInputFilter mInputFilter;
++
++    private int mGlobalPositions = 0;
++    private int mGlobalSensitivity = 5;
++
++    private final class EdgeGestureActivationListenerRecord extends IEdgeGestureHostCallback.Stub implements DeathRecipient {
++        private boolean mActive;
++
++        public EdgeGestureActivationListenerRecord(IEdgeGestureActivationListener listener) {
++            this.listener = listener;
++            this.positions = 0;
++        }
++
++        public void binderDied() {
++            removeListenerRecord(this);
++        }
++
++        private void updateFlags(int flags) {
++            this.positions = flags & POSITION_MASK;
++            this.sensitivity = (flags & SENSITIVITY_MASK) >> SENSITIVITY_SHIFT;
++            this.longLiving = (flags & LONG_LIVING) != 0;
++        }
++
++        private boolean eligibleForActivation(int positionFlag) {
++            return (positions & positionFlag) != 0;
++        }
++
++        private boolean notifyEdgeGestureActivation(int touchX, int touchY, EdgeGesturePosition position) {
++            if ((positions & position.FLAG) != 0) {
++                try {
++                    mActive = true;
++                    listener.onEdgeGestureActivation(touchX, touchY, position.INDEX, 0);
++                } catch (RemoteException e) {
++                    Slog.w(TAG, "Failed to notify process, assuming it died.", e);
++                    mActive = false;
++                    binderDied();
++                }
++            }
++            return mActive;
++        }
++
++        // called through Binder
++        public boolean gainTouchFocus(IBinder windowToken) {
++            if (DEBUG) {
++                Slog.d(TAG, "Gain touch focus for " + windowToken);
++            }
++            if (mActive) {
++                return mInputFilter.unlockFilter();
++            }
++            return false;
++        }
++
++        public boolean dropEventsUntilLift() {
++            if (DEBUG) {
++                Slog.d(TAG, "Will drop all next events till touch up");
++            }
++            if (mActive) {
++                return mInputFilter.dropSequence();
++            }
++            return false;
++        }
++
++        // called through Binder
++        public void restoreListenerState() throws RemoteException {
++            if (DEBUG) {
++                Slog.d(TAG, "Restore listener state");
++            }
++            if (mActive) {
++                mInputFilter.unlockFilter();
++                mActive = false;
++                synchronized (mLock) {
++                    // restore input filter state by updating
++                    mHandler.sendEmptyMessage(MSG_UPDATE_SERVICE);
++                }
++            }
++        }
++
++        public boolean isActive() {
++            return mActive;
++        }
++
++        public void dump(PrintWriter pw, String prefix) {
++            pw.print(prefix);
++            pw.print("mPositions=0x" + Integer.toHexString(positions));
++            pw.println(" mActive=" + mActive);
++            pw.print(prefix);
++            pw.println("mBinder=" + listener);
++        }
++
++        public int positions;
++        public int sensitivity;
++        public final IEdgeGestureActivationListener listener;
++        public boolean longLiving = false;
++    }
++    private final List<EdgeGestureActivationListenerRecord> mEdgeGestureActivationListener =
++            new ArrayList<EdgeGestureActivationListenerRecord>();
++    // end of lock guarded variables
++
++    private DisplayObserver mDisplayObserver;
++
++    // called by system server
++    public EdgeGestureService(Context context, InputManagerService inputManager) {
++        mContext = context;
++        mInputManager = inputManager;
++    }
++
++    // called by system server
++    public void systemReady() {
++        if (DEBUG) Slog.d(TAG, "Starting the edge gesture capture thread ...");
++
++        mHandlerThread.start();
++        mHandler = new H(mHandlerThread.getLooper());
++        mHandler.post(new Runnable() {
++            @Override
++            public void run() {
++                android.os.Process.setThreadPriority(
++                        android.os.Process.THREAD_PRIORITY_FOREGROUND);
++                android.os.Process.setCanSelfBackground(false);
++            }
++        });
++        mDisplayObserver = new DisplayObserver(mContext, mHandler);
++        // check if anyone registered during startup
++        mHandler.sendEmptyMessage(MSG_UPDATE_SERVICE);
++    }
++
++
++    private void updateMonitoring() {
++        synchronized(mLock) {
++            mGlobalPositions = 0;
++            mGlobalSensitivity = SENSITIVITY_NONE;
++            boolean someLongLiving = false;
++            int activePositions = 0;
++            for (EdgeGestureActivationListenerRecord temp : mEdgeGestureActivationListener) {
++                mGlobalPositions |= temp.positions;
++                if (temp.isActive()) {
++                    activePositions |= temp.positions;
++                }
++                if (temp.sensitivity != SENSITIVITY_NONE) {
++                    mGlobalSensitivity = Math.max(mGlobalSensitivity, temp.sensitivity);
++                }
++                someLongLiving |= temp.longLiving;
++            }
++            boolean havePositions = mGlobalPositions != 0;
++            mGlobalPositions &= ~activePositions;
++            // if no special sensitivity is requested, we settle on DEFAULT
++            if (mGlobalSensitivity == SENSITIVITY_NONE) {
++                mGlobalSensitivity = SENSITIVITY_DEFAULT;
++            }
++
++            if (mInputFilter == null && havePositions) {
++                enforceMonitoringLocked();
++            } else if (mInputFilter != null && !havePositions && !someLongLiving) {
++                shutdownMonitoringLocked();
++            }
++        }
++    }
++
++    private void enforceMonitoringLocked() {
++        if (DEBUG) {
++            Slog.d(TAG, "Attempting to start monitoring input events ...");
++        }
++        mInputFilter = new EdgeGestureInputFilter(mContext, mHandler);
++        mInputManager.registerSecondaryInputFilter(mInputFilter);
++        mDisplayObserver.observe();
++    }
++
++    private void shutdownMonitoringLocked() {
++        if (DEBUG) {
++            Slog.d(TAG, "Shutting down monitoring input events ...");
++        }
++        mDisplayObserver.unobserve();
++        mInputManager.unregisterSecondaryInputFilter(mInputFilter);
++        mInputFilter = null;
++    }
++
++    // called through Binder
++    public IEdgeGestureHostCallback registerEdgeGestureActivationListener(IEdgeGestureActivationListener listener) {
++        if (mContext.checkCallingOrSelfPermission(Manifest.permission.INJECT_EVENTS)
++                != PackageManager.PERMISSION_GRANTED) {
++            Slog.w(TAG, "Permission Denial: can't register from from pid="
++                    + Binder.getCallingPid() + ", uid=" + Binder.getCallingUid());
++            return null;
++        }
++
++        if (listener == null) {
++            throw new IllegalArgumentException("listener must not be null");
++        }
++
++        EdgeGestureActivationListenerRecord record = null;
++        synchronized(mLock) {
++            record = findListenerRecordLocked(listener.asBinder());
++            if (record == null) {
++                record = new EdgeGestureActivationListenerRecord(listener);
++                try {
++                    listener.asBinder().linkToDeath(record, 0);
++                } catch (RemoteException e) {
++                    Slog.w(TAG, "Recipient died during registration pid=" + Binder.getCallingPid());
++                    return null;
++                }
++                mEdgeGestureActivationListener.add(record);
++            }
++        }
++        return record;
++    }
++
++    // called through Binder
++    public void updateEdgeGestureActivationListener(IBinder listener, int positionFlags) {
++        if (listener == null) {
++            throw new IllegalArgumentException("listener must not be null");
++        }
++        synchronized(mLock) {
++            EdgeGestureActivationListenerRecord record = findListenerRecordLocked(listener);
++            if (record == null) {
++                Slog.w(TAG, "Unknown listener on update listener. Register first?");
++                throw new IllegalStateException("listener not registered");
++            }
++            record.updateFlags(positionFlags);
++            // update input filter only when #systemReady() was called
++            if (mHandler != null) {
++                mHandler.sendEmptyMessage(MSG_UPDATE_SERVICE);
++            }
++        }
++    }
++
++    private EdgeGestureActivationListenerRecord findListenerRecordLocked(IBinder listener) {
++        for (EdgeGestureActivationListenerRecord record : mEdgeGestureActivationListener) {
++            if (record.listener.asBinder().equals(listener)) {
++                return record;
++            }
++        }
++        return null;
++    }
++
++    private void removeListenerRecord(EdgeGestureActivationListenerRecord record) {
++        synchronized(mLock) {
++            mEdgeGestureActivationListener.remove(record);
++            // restore input filter state by updating
++            mHandler.sendEmptyMessage(MSG_UPDATE_SERVICE);
++        }
++    }
++
++    // called by handler thread
++    private boolean propagateActivation(int touchX, int touchY, EdgeGesturePosition position) {
++        synchronized(mLock) {
++            EdgeGestureActivationListenerRecord target = null;
++            for (EdgeGestureActivationListenerRecord record : mEdgeGestureActivationListener) {
++                if (record.eligibleForActivation(position.FLAG)) {
++                    target = record;
++                    break;
++                }
++            }
++            // NOTE: We can do this here because the #onGestureActivation() is a oneway
++            // Binder call. This means we do not block with holding the mListenerLock!!!
++            // If this ever change, this needs to be adjusted and if you don't know what
++            // this means, you should probably not mess around with this code, anyway.
++            if (target != null && !target.notifyEdgeGestureActivation(touchX, touchY, position)) {
++                target = null;
++            }
++            return target != null;
++        }
++    }
++
++    private final class H extends Handler {
++        public H(Looper looper) {
++            super(looper);
++        }
++
++        @Override
++        public void handleMessage(Message m) {
++            switch (m.what) {
++                case MSG_EDGE_GESTURE_ACTIVATION:
++                    if (DEBUG) {
++                        Slog.d(TAG, "Activating edge gesture on " + m.obj.toString());
++                    }
++                    // Since input filter runs asynchronously to us, double activation may happen
++                    // theoretically. Take the safe route here.
++                    removeMessages(MSG_EDGE_GESTURE_ACTIVATION);
++                    if (propagateActivation(m.arg1, m.arg2, (EdgeGesturePosition) m.obj)) {
++                        // switch off activated positions
++                        updateMonitoring();
++                        updateServiceHandler(mGlobalPositions, mGlobalSensitivity);
++                    }
++                    break;
++                case MSG_UPDATE_SERVICE:
++                    updateMonitoring();
++                    if (DEBUG) {
++                        Slog.d(TAG, "Updating positions 0x" + Integer.toHexString(mGlobalPositions)
++                                + " sensitivity: " + mGlobalSensitivity);
++                    }
++                    updateServiceHandler(mGlobalPositions, mGlobalSensitivity);
++                    break;
++                }
++        }
++
++        private void updateServiceHandler(int positions, int sensitivity) {
++            synchronized (mLock) {
++                if (mInputFilter != null) {
++                    mInputFilter.updatePositions(positions);
++                    mInputFilter.updateSensitivity(sensitivity);
++                }
++            }
++        }
++    }
++
++    private final class DisplayObserver implements DisplayListener {
++        private final Handler mHandler;
++        private final DisplayManager mDisplayManager;
++
++        private final Display mDefaultDisplay;
++        private final DisplayInfo mDefaultDisplayInfo = new DisplayInfo();
++
++        public DisplayObserver(Context context, Handler handler) {
++            mHandler = handler;
++            mDisplayManager = (DisplayManager) context.getSystemService(
++                    Context.DISPLAY_SERVICE);
++            final WindowManager windowManager = (WindowManager) context.getSystemService(
++                    Context.WINDOW_SERVICE);
++
++            mDefaultDisplay = windowManager.getDefaultDisplay();
++            updateDisplayInfo();
++        }
++
++        private void updateDisplayInfo() {
++            if (DEBUG) {
++                Slog.d(TAG, "Updating display information ...");
++            }
++            if (mDefaultDisplay.getDisplayInfo(mDefaultDisplayInfo)) {
++                synchronized (mLock) {
++                    if (mInputFilter != null) {
++                        mInputFilter.updateDisplay(mDefaultDisplay, mDefaultDisplayInfo);
++                    }
++                }
++            } else {
++                Slog.e(TAG, "Default display is not valid.");
++            }
++        }
++
++        public void observe() {
++            mDisplayManager.registerDisplayListener(this, mHandler);
++            updateDisplayInfo();
++        }
++
++        public void unobserve() {
++            mDisplayManager.unregisterDisplayListener(this);
++        }
++
++        @Override
++        public void onDisplayAdded(int displayId) {
++            /* do noting */
++        }
++
++        @Override
++        public void onDisplayRemoved(int displayId) {
++            /* do nothing */
++        }
++
++        @Override
++        public void onDisplayChanged(int displayId) {
++            updateDisplayInfo();
++        }
++    }
++
++    @Override
++    public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
++            throws RemoteException {
++        try {
++            return super.onTransact(code, data, reply, flags);
++        } catch (RuntimeException e) {
++            // let's log all exceptions we do not know about.
++            if (!(e instanceof IllegalArgumentException || e instanceof IllegalStateException)) {
++                Slog.e(TAG, "EdgeGestureService crashed: ", e);
++            }
++            throw e;
++        }
++    }
++
++    @Override
++    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
++        if (mContext.checkCallingOrSelfPermission(Manifest.permission.DUMP)
++                != PackageManager.PERMISSION_GRANTED) {
++            pw.println("Permission Denial: can't dump EdgeGestureService from from pid="
++                    + Binder.getCallingPid()
++                    + ", uid=" + Binder.getCallingUid());
++            return;
++        }
++
++        pw.println("EDGE GESTURE SERVICE (dumpsys edgegestureservice)\n");
++        synchronized(mLock) {
++            pw.println("  mInputFilter=" + mInputFilter);
++            if (mInputFilter != null) {
++                mInputFilter.dump(pw, "    ");
++            }
++            pw.println("  mGlobalPositions=0x" + Integer.toHexString(mGlobalPositions));
++            pw.println("  mGlobalSensitivity=" + mGlobalSensitivity);
++            int i = 0;
++            for (EdgeGestureActivationListenerRecord record : mEdgeGestureActivationListener) {
++                if (record.isActive()) {
++                    pw.println("  Active record: #" + (i + 1));
++                }
++            }
++            i = 0;
++            for (EdgeGestureActivationListenerRecord record : mEdgeGestureActivationListener) {
++                pw.println("  Listener #" + i + ":");
++                record.dump(pw, "    ");
++                i++;
++            }
++        }
++    }
++}
+diff --git a/services/java/com/android/server/gesture/EdgeGestureTracker.java b/services/java/com/android/server/gesture/EdgeGestureTracker.java
+new file mode 100644
+index 0000000..18afb14
+--- /dev/null
++++ b/services/java/com/android/server/gesture/EdgeGestureTracker.java
+@@ -0,0 +1,252 @@
++/*
++ * Copyright (C) 2013 The CyanogenMod Project (Jens Doll)
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
++ * use this file except in compliance with the License. You may obtain a copy of
++ * the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++ * License for the specific language governing permissions and limitations under
++ * the License.
++ */
++package com.android.server.gesture;
++
++import android.graphics.Point;
++import android.os.SystemClock;
++import android.util.Slog;
++import android.view.Display;
++import android.view.MotionEvent;
++
++import com.android.internal.util.gesture.EdgeGesturePosition;
++import com.android.internal.util.gesture.EdgeServiceConstants;
++
++/**
++ * A simple {@link MotionEvent} tracker class. The main aim of this tracker is to
++ * reject gestures as fast as possible, so there is only a small amount of events
++ * that will be delayed.
++ */
++public class EdgeGestureTracker {
++    public final static String TAG = "EdgeGestureTracker";
++    public final static boolean DEBUG = false;
++
++    public final static long TRIGGER_TIME_MS = 140;
++    public final static int PIXEL_SWIPE_OFFTAKE_SLOP = 2;
++
++    private final int mBaseThickness;
++    private final int mBaseTriggerDistance;
++    private final int mBasePerpendicularDistance;
++
++    private int mThickness;
++    private int mTriggerDistance;
++    private int mPerpendicularDistance;
++    private int mGracePeriodDistance;
++    private long mTimeOut;
++
++    private int mDisplayWidth;
++    private int mDisplayHeight;
++
++    private boolean mActive;
++    private EdgeGesturePosition mPosition;
++    private long mDownTime;
++    private int mInitialX;
++    private int mInitialY;
++    private int mOffTake;
++    private int mGracePeriod;
++
++    public interface OnActivationListener {
++        public void onActivation(MotionEvent event, int touchX, int touchY, EdgeGesturePosition position);
++    }
++    private OnActivationListener mActivationListener;
++
++    public EdgeGestureTracker(int thickness, int distance, int perpendicular) {
++        if (DEBUG) {
++            Slog.d(TAG, "init: " + thickness + "," + distance);
++        }
++        mBaseThickness = thickness;
++        mBaseTriggerDistance = distance;
++        mBasePerpendicularDistance = perpendicular;
++        setSensitivity(0);
++    }
++
++    private void setSensitivity(int sensitivity) {
++        float factor = 0.0f;
++        if (sensitivity >= 1) {
++             factor = (sensitivity - 1) / 10.0f;
++        }
++        if (DEBUG) {
++            Slog.d(TAG, "sensitivity: " + sensitivity + " => factor:" + factor);
++        }
++        // default values (without overlay):
++        // 140ms ... 210ms
++        mTimeOut = (long) (TRIGGER_TIME_MS * (factor + 1.0f));
++        // 12dp ... 18dp
++        mThickness = (int) (mBaseThickness * (factor + 1.0f));
++        // 12dp ... 6dp
++        mTriggerDistance = (int) (mBaseTriggerDistance * (1.0f - factor));
++        mPerpendicularDistance = (int) (mBasePerpendicularDistance * (1.0f - factor));
++        mGracePeriodDistance = (int) (mThickness / 3.0f);
++    }
++
++    public void setOnActivationListener(OnActivationListener listener) {
++        mActivationListener = listener;
++    }
++
++    public void reset() {
++        mActive = false;
++    }
++
++    public void updateDisplay(Display display) {
++        Point outSize = new Point(0,0);
++        display.getRealSize(outSize);
++        mDisplayWidth = outSize.x;
++        mDisplayHeight = outSize.y;
++        if (DEBUG) {
++            Slog.d(TAG, "new display: " + mDisplayWidth + "," + mDisplayHeight);
++        }
++    }
++
++    public boolean start(MotionEvent motionEvent, int positions, int sensitivity) {
++        final boolean unrestricted = (positions & EdgeServiceConstants.UNRESTRICTED) != 0;
++        final int x = (int) motionEvent.getX();
++        final float fx = motionEvent.getX() / mDisplayWidth;
++        final int y = (int) motionEvent.getY();
++        final float fy = motionEvent.getY() / mDisplayHeight;
++
++        // calculate trigger geometry based on sensitivity
++        setSensitivity(sensitivity);
++
++        if ((positions & EdgeGesturePosition.LEFT.FLAG) != 0) {
++            if (x < mThickness && (unrestricted || (fy > 0.1f && fy < 0.9f))) {
++                startWithPosition(motionEvent, EdgeGesturePosition.LEFT);
++                return true;
++            }
++        }
++        if ((positions & EdgeGesturePosition.BOTTOM.FLAG) != 0) {
++            if (y > mDisplayHeight - mThickness && (unrestricted || (fx > 0.1f && fx < 0.9f))) {
++                startWithPosition(motionEvent, EdgeGesturePosition.BOTTOM);
++                return true;
++            }
++        }
++        if ((positions & EdgeGesturePosition.RIGHT.FLAG) != 0) {
++            if (x > mDisplayWidth - mThickness && (unrestricted || (fy > 0.1f && fy < 0.9f))) {
++                startWithPosition(motionEvent, EdgeGesturePosition.RIGHT);
++                return true;
++            }
++        }
++        if ((positions & EdgeGesturePosition.TOP.FLAG) != 0) {
++            if (y < mThickness && (unrestricted || (fx > 0.1f && fx < 0.9f))) {
++                startWithPosition(motionEvent, EdgeGesturePosition.TOP);
++                return true;
++            }
++        }
++        return false;
++    }
++
++    private void startWithPosition(MotionEvent motionEvent, EdgeGesturePosition position) {
++        if (DEBUG) {
++            Slog.d(TAG, "start tracking from " + position.name());
++        }
++
++        mDownTime = motionEvent.getDownTime();
++        this.mPosition = position;
++        mInitialX = (int) motionEvent.getX();
++        mInitialY = (int) motionEvent.getY();
++        switch (position) {
++            case LEFT:
++                mGracePeriod = mGracePeriodDistance;
++                mOffTake = mInitialX - PIXEL_SWIPE_OFFTAKE_SLOP;
++                break;
++            case BOTTOM:
++                mOffTake = mInitialY + PIXEL_SWIPE_OFFTAKE_SLOP;
++                break;
++            case RIGHT:
++                mGracePeriod = mDisplayWidth - mGracePeriodDistance;
++                mOffTake = mInitialX + PIXEL_SWIPE_OFFTAKE_SLOP;
++                break;
++            case TOP:
++                mOffTake = mInitialY - PIXEL_SWIPE_OFFTAKE_SLOP;
++                break;
++        }
++        mActive = true;
++    }
++
++    public boolean move(MotionEvent motionEvent) {
++        if (!mActive || motionEvent.getEventTime() - mDownTime > mTimeOut) {
++            Slog.d(TAG, "edge gesture timeout: " + (motionEvent.getEventTime() - mDownTime));
++            mActive = false;
++            return false;
++        }
++
++        final int x = (int) motionEvent.getX();
++        final int y = (int) motionEvent.getY();
++        final int deltaX = x - mInitialX;
++        final int deltaY = y - mInitialY;
++
++        if (DEBUG) {
++            Slog.d(TAG, "move at " + x + "," + y + " " + deltaX + "," + deltaY);
++        }
++
++        boolean loaded = false;
++        switch (mPosition) {
++            case LEFT:
++                if (x < mGracePeriod) {
++                    mInitialY = y;
++                }
++                if (deltaY < mPerpendicularDistance && deltaY > -mPerpendicularDistance
++                        && x >= mOffTake) {
++                    if (deltaX < mTriggerDistance) {
++                        mOffTake = x - PIXEL_SWIPE_OFFTAKE_SLOP;
++                        return true;
++                    }
++                    loaded = true;
++                }
++                break;
++            case BOTTOM:
++                if (deltaX < mPerpendicularDistance && deltaX > -mPerpendicularDistance
++                        && y <= mOffTake) {
++                    if (deltaY > -mTriggerDistance) {
++                        mOffTake = y + PIXEL_SWIPE_OFFTAKE_SLOP;
++                        return true;
++                    }
++                    loaded = true;
++                }
++                break;
++            case RIGHT:
++                if (x > mGracePeriod) {
++                    mInitialY = y;
++                }
++                if (deltaY < mPerpendicularDistance && deltaY > -mPerpendicularDistance
++                        && x <= mOffTake) {
++                    if (deltaX > -mTriggerDistance) {
++                        mOffTake = x + PIXEL_SWIPE_OFFTAKE_SLOP;
++                        return true;
++                    }
++                    loaded = true;
++                }
++                break;
++            case TOP:
++                if (deltaX < mPerpendicularDistance && deltaX > -mPerpendicularDistance
++                        && y >= mOffTake) {
++                    if (deltaY < mTriggerDistance) {
++                        mOffTake = y - PIXEL_SWIPE_OFFTAKE_SLOP;
++                        return true;
++                    }
++                    loaded = true;
++                }
++                break;
++        }
++        mActive = false;
++        if (loaded && mActivationListener != null) {
++            if (DEBUG) {
++                Slog.d(TAG, "activate at " + x + "," + y + " " + mPosition + " within "
++                        + (SystemClock.uptimeMillis() - mDownTime) + "ms");
++            }
++            mActivationListener.onActivation(motionEvent, x, y, mPosition);
++        }
++        return loaded;
++    }
++}
+
