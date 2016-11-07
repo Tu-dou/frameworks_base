@@ -205,10 +205,6 @@ public class TaskView extends FixedSizeFrameLayout implements Task.TaskCallbacks
         return mTask;
     }
 
-    public TaskViewHeader getTaskViewHeader() {
-        return mHeaderView;
-    }
-
     /** Returns the view bounds. */
     AnimateableViewBounds getViewBounds() {
         return mViewBounds;

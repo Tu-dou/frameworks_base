@@ -16,7 +16,7 @@
 -->
 <resources>
      <!-- Default value for led color when battery is really fully charged -->
-     <integer name="config_notificationsBatteryReallyFullARGB">0xFF00FF00</integer>
+
     <!-- EdgeGesture service -->
     <java-symbol type="dimen" name="edge_gesture_trigger_distance" />
     <java-symbol type="dimen" name="edge_gesture_perpendicular_distance" />

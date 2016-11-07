@@ -1473,7 +1473,7 @@ public final class Settings {
                 resolver.insert(uri, values);
                 return true;
             } catch (SQLException e) {
-                Log.w(TAG, "Can't set key "  name  " in "  uri, e);
+                Log.w(TAG, "Can't set key " + name + " in " + uri, e);
                 return false;
             }
         }
@@ -1582,7 +1582,7 @@ public final class Settings {
                 IContentProvider cp = lazyGetProvider(cr);
                 cp.call(cr.getPackageName(), mCallSetCommand, name, arg);
             } catch (RemoteException e) {
-                Log.w(TAG, "Can't set key "  name  " in "  mUri, e);
+                Log.w(TAG, "Can't set key " + name + " in " + mUri, e);
                 return false;
             }
             return true;
@@ -1596,8 +1596,8 @@ public final class Settings {
                         if (mGenerationTracker.isGenerationChanged()) {
                             if (DEBUG) {
                                 Log.i(TAG, "Generation changed for type:"
-                                         mUri.getPath()  " in package:"
-                                         cr.getPackageName() " and user:"  userHandle);
+                                        + mUri.getPath() + " in package:"
+                                        + cr.getPackageName() +" and user:" + userHandle);
                             }
                             mValues.clear();
                         } else if (mValues.containsKey(name)) {
@@ -1606,8 +1606,8 @@ public final class Settings {
                     }
                 }
             } else {
-                if (LOCAL_LOGV) Log.v(TAG, "get setting for user "  userHandle
-                         " by user "  UserHandle.myUserId()  " so skipping cache");
+                if (LOCAL_LOGV) Log.v(TAG, "get setting for user " + userHandle
+                        + " by user " + UserHandle.myUserId() + " so skipping cache");
             }
 
             IContentProvider cp = lazyGetProvider(cr);
@@ -1632,9 +1632,9 @@ public final class Settings {
                             }
                             args.putString(CALL_METHOD_TRACK_GENERATION_KEY, null);
                             if (DEBUG) {
-                                Log.i(TAG, "Requested generation tracker for type: " mUri.getPath()
-                                         " in package:"  cr.getPackageName() " and user:"
-                                         userHandle);
+                                Log.i(TAG, "Requested generation tracker for type: "+ mUri.getPath()
+                                        + " in package:" + cr.getPackageName() +" and user:"
+                                        + userHandle);
                             }
                         }
                     }
@@ -1654,15 +1654,15 @@ public final class Settings {
                                                 CALL_METHOD_GENERATION_KEY, 0);
                                         if (DEBUG) {
                                             Log.i(TAG, "Received generation tracker for type:"
-                                                     mUri.getPath()  " in package:"
-                                                     cr.getPackageName()  " and user:"
-                                                     userHandle  " with index:"  index);
+                                                    + mUri.getPath() + " in package:"
+                                                    + cr.getPackageName() + " and user:"
+                                                    + userHandle + " with index:" + index);
                                         }
                                         mGenerationTracker = new GenerationTracker(array, index,
                                                 generation, () -> {
                                             synchronized (NameValueCache.this) {
                                                 Log.e(TAG, "Error accessing generation"
-                                                         " tracker - removing");
+                                                        + " tracker - removing");
                                                 if (mGenerationTracker != null) {
                                                     GenerationTracker generationTracker =
                                                             mGenerationTracker;
@@ -1677,9 +1677,9 @@ public final class Settings {
                                 mValues.put(name, value);
                             }
                         } else {
-                            if (LOCAL_LOGV) Log.i(TAG, "call-query of user "  userHandle
-                                     " by "  UserHandle.myUserId()
-                                     " so not updating cache");
+                            if (LOCAL_LOGV) Log.i(TAG, "call-query of user " + userHandle
+                                    + " by " + UserHandle.myUserId()
+                                    + " so not updating cache");
                         }
                         return value;
                     }
@@ -1696,7 +1696,7 @@ public final class Settings {
                 c = cp.query(cr.getPackageName(), mUri, SELECT_VALUE, NAME_EQ_PLACEHOLDER,
                              new String[]{name}, null, null);
                 if (c == null) {
-                    Log.w(TAG, "Can't get key "  name  " from "  mUri);
+                    Log.w(TAG, "Can't get key " + name + " from " + mUri);
                     return null;
                 }
 
@@ -1705,12 +1705,12 @@ public final class Settings {
                     mValues.put(name, value);
                 }
                 if (LOCAL_LOGV) {
-                    Log.v(TAG, "cache miss ["  mUri.getLastPathSegment()  "]: " 
-                            name  " = "  (value == null ? "(null)" : value));
+                    Log.v(TAG, "cache miss [" + mUri.getLastPathSegment() + "]: " +
+                            name + " = " + (value == null ? "(null)" : value));
                 }
                 return value;
             } catch (RemoteException e) {
-                Log.w(TAG, "Can't get key "  name  " from "  mUri, e);
+                Log.w(TAG, "Can't get key " + name + " from " + mUri, e);
                 return null;  // Return null, but don't cache it.
             } finally {
                 if (c != null) c.close();
@@ -1753,7 +1753,7 @@ public final class Settings {
          * The content:// style URL for this table
          */
         public static final Uri CONTENT_URI =
-            Uri.parse("content://"  AUTHORITY  "/system");
+            Uri.parse("content://" + AUTHORITY + "/system");
 
         private static final NameValueCache sNameValueCache = new NameValueCache(
                 CONTENT_URI,
@@ -1959,13 +1959,13 @@ public final class Settings {
                 int userHandle) {
             android.util.SeempLog.record(android.util.SeempLog.getSeempGetApiIdFromValue(name));
             if (MOVED_TO_SECURE.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.System"
-                         " to android.provider.Settings.Secure, returning read-only value.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.System"
+                        + " to android.provider.Settings.Secure, returning read-only value.");
                 return Secure.getStringForUser(resolver, name, userHandle);
             }
             if (MOVED_TO_GLOBAL.contains(name) || MOVED_TO_SECURE_THEN_GLOBAL.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.System"
-                         " to android.provider.Settings.Global, returning read-only value.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.System"
+                        + " to android.provider.Settings.Global, returning read-only value.");
                 return Global.getStringForUser(resolver, name, userHandle);
             }
             return sNameValueCache.getStringForUser(resolver, name, userHandle);
@@ -1987,13 +1987,13 @@ public final class Settings {
                 int userHandle) {
             android.util.SeempLog.record(android.util.SeempLog.getSeempPutApiIdFromValue(name));
             if (MOVED_TO_SECURE.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.System"
-                         " to android.provider.Settings.Secure, value is unchanged.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.System"
+                        + " to android.provider.Settings.Secure, value is unchanged.");
                 return false;
             }
             if (MOVED_TO_GLOBAL.contains(name) || MOVED_TO_SECURE_THEN_GLOBAL.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.System"
-                         " to android.provider.Settings.Global.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.System"
+                        + " to android.provider.Settings.Global.");
 
                 return Global.putStringForUser(resolver, name, value, userHandle);
             }
@@ -2008,13 +2008,13 @@ public final class Settings {
          */
         public static Uri getUriFor(String name) {
             if (MOVED_TO_SECURE.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.System"
-                     " to android.provider.Settings.Secure, returning Secure URI.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.System"
+                    + " to android.provider.Settings.Secure, returning Secure URI.");
                 return Secure.getUriFor(Secure.CONTENT_URI, name);
             }
             if (MOVED_TO_GLOBAL.contains(name) || MOVED_TO_SECURE_THEN_GLOBAL.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.System"
-                         " to android.provider.Settings.Global, returning read-only global URI.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.System"
+                        + " to android.provider.Settings.Global, returning read-only global URI.");
                 return Global.getUriFor(Global.CONTENT_URI, name);
             }
             return getUriFor(CONTENT_URI, name);
@@ -3600,10 +3600,10 @@ public final class Settings {
 
         /**
          * Pointer speed setting.
-         * This is an integer value in a range between -7 and 7, so there are 15 possible values.
+         * This is an integer value in a range between -7 and +7, so there are 15 possible values.
          *   -7 = slowest
          *    0 = default speed
-         *   7 = fastest
+         *   +7 = fastest
          * @hide
          */
         public static final String POINTER_SPEED = "pointer_speed";
@@ -4795,7 +4795,7 @@ public final class Settings {
          * The content:// style URL for this table
          */
         public static final Uri CONTENT_URI =
-            Uri.parse("content://"  AUTHORITY  "/secure");
+            Uri.parse("content://" + AUTHORITY + "/secure");
 
         // Populated lazily, guarded by class object:
         private static final NameValueCache sNameValueCache = new NameValueCache(
@@ -4991,8 +4991,8 @@ public final class Settings {
         public static String getStringForUser(ContentResolver resolver, String name,
                 int userHandle) {
             if (MOVED_TO_GLOBAL.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.Secure"
-                         " to android.provider.Settings.Global.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.Secure"
+                        + " to android.provider.Settings.Global.");
                 return Global.getStringForUser(resolver, name, userHandle);
             }
 
@@ -5020,9 +5020,9 @@ public final class Settings {
                             // Fall through
                         }
                     } else {
-                        throw new SecurityException("Settings.Secure."  name
-                                 " is deprecated and no longer accessible."
-                                 " See API documentation for potential replacements.");
+                        throw new SecurityException("Settings.Secure." + name
+                                + " is deprecated and no longer accessible."
+                                + " See API documentation for potential replacements.");
                     }
                 }
             }
@@ -5050,8 +5050,8 @@ public final class Settings {
                 return setLocationModeForUser(resolver, Integer.parseInt(value), userHandle);
             }
             if (MOVED_TO_GLOBAL.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.System"
-                         " to android.provider.Settings.Global");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.System"
+                        + " to android.provider.Settings.Global");
                 return Global.putStringForUser(resolver, name, value, userHandle);
             }
             return sNameValueCache.putStringForUser(resolver, name, value, userHandle);
@@ -5065,8 +5065,8 @@ public final class Settings {
          */
         public static Uri getUriFor(String name) {
             if (MOVED_TO_GLOBAL.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.Secure"
-                         " to android.provider.Settings.Global, returning global URI.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.Secure"
+                        + " to android.provider.Settings.Global, returning global URI.");
                 return Global.getUriFor(Global.CONTENT_URI, name);
             }
             return getUriFor(CONTENT_URI, name);
@@ -7560,13 +7560,13 @@ public final class Settings {
         public static final boolean setLocationProviderEnabledForUser(ContentResolver cr,
                 String provider, boolean enabled, int userId) {
             synchronized (mLocationSettingsLock) {
-                // to ensure thread safety, we write the provider name with a '' or '-'
+                // to ensure thread safety, we write the provider name with a '+' or '-'
                 // and let the SettingsProvider handle it rather than reading and modifying
                 // the list of enabled providers.
                 if (enabled) {
-                    provider = ""  provider;
+                    provider = "+" + provider;
                 } else {
-                    provider = "-"  provider;
+                    provider = "-" + provider;
                 }
                 return putStringForUser(cr, Settings.Secure.LOCATION_PROVIDERS_ALLOWED, provider,
                         userId);
@@ -7630,7 +7630,7 @@ public final class Settings {
                         network = true;
                         break;
                     default:
-                        throw new IllegalArgumentException("Invalid location mode: "  mode);
+                        throw new IllegalArgumentException("Invalid location mode: " + mode);
                 }
                 // Note it's important that we set the NLP mode first. The Google implementation
                 // of NLP clears its NLP consent setting any time it receives a
@@ -7687,7 +7687,7 @@ public final class Settings {
         /**
          * The content:// style URL for global secure settings items.  Not public.
          */
-        public static final Uri CONTENT_URI = Uri.parse("content://"  AUTHORITY  "/global");
+        public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/global");
 
         /**
          * Whether users are allowed to add more users or guest from lockscreen.
@@ -8730,7 +8730,7 @@ public final class Settings {
        /**
         * The maximum number of times we will retry a connection to an access
         * point for which we have failed in acquiring an IP address from DHCP.
-        * A value of N means that we will make N1 connection attempts in all.
+        * A value of N means that we will make N+1 connection attempts in all.
         */
        public static final String WIFI_MAX_DHCP_RETRY_COUNT = "wifi_max_dhcp_retry_count";
 
@@ -9311,7 +9311,7 @@ public final class Settings {
          * @hide
          */
         public static final String getBluetoothHeadsetPriorityKey(String address) {
-            return BLUETOOTH_HEADSET_PRIORITY_PREFIX  address.toUpperCase(Locale.ROOT);
+            return BLUETOOTH_HEADSET_PRIORITY_PREFIX + address.toUpperCase(Locale.ROOT);
         }
 
         /**
@@ -9319,7 +9319,7 @@ public final class Settings {
          * @hide
          */
         public static final String getBluetoothA2dpSinkPriorityKey(String address) {
-            return BLUETOOTH_A2DP_SINK_PRIORITY_PREFIX  address.toUpperCase(Locale.ROOT);
+            return BLUETOOTH_A2DP_SINK_PRIORITY_PREFIX + address.toUpperCase(Locale.ROOT);
         }
 
         /**
@@ -9327,7 +9327,7 @@ public final class Settings {
          * @hide
          */
         public static final String getBluetoothA2dpSrcPriorityKey(String address) {
-            return BLUETOOTH_A2DP_SRC_PRIORITY_PREFIX  address.toUpperCase(Locale.ROOT);
+            return BLUETOOTH_A2DP_SRC_PRIORITY_PREFIX + address.toUpperCase(Locale.ROOT);
         }
 
         /**
@@ -9335,7 +9335,7 @@ public final class Settings {
          * @hide
          */
         public static final String getBluetoothInputDevicePriorityKey(String address) {
-            return BLUETOOTH_INPUT_DEVICE_PRIORITY_PREFIX  address.toUpperCase(Locale.ROOT);
+            return BLUETOOTH_INPUT_DEVICE_PRIORITY_PREFIX + address.toUpperCase(Locale.ROOT);
         }
 
         /**
@@ -9343,7 +9343,7 @@ public final class Settings {
          * @hide
          */
         public static final String getBluetoothMapPriorityKey(String address) {
-            return BLUETOOTH_MAP_PRIORITY_PREFIX  address.toUpperCase(Locale.ROOT);
+            return BLUETOOTH_MAP_PRIORITY_PREFIX + address.toUpperCase(Locale.ROOT);
         }
 
         /**
@@ -9351,7 +9351,7 @@ public final class Settings {
          * @hide
          */
         public static final String getBluetoothPbapClientPriorityKey(String address) {
-            return BLUETOOTH_PBAP_CLIENT_PRIORITY_PREFIX  address.toUpperCase(Locale.ROOT);
+            return BLUETOOTH_PBAP_CLIENT_PRIORITY_PREFIX + address.toUpperCase(Locale.ROOT);
         }
 
         /**
@@ -9359,7 +9359,7 @@ public final class Settings {
          * @hide
          */
         public static final String getBluetoothSapPriorityKey(String address) {
-            return BLUETOOTH_SAP_PRIORITY_PREFIX  address.toUpperCase(Locale.ROOT);
+            return BLUETOOTH_SAP_PRIORITY_PREFIX + address.toUpperCase(Locale.ROOT);
         }
 
         /**
@@ -9985,8 +9985,8 @@ public final class Settings {
         public static String getStringForUser(ContentResolver resolver, String name,
                 int userHandle) {
             if (MOVED_TO_SECURE.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.Global"
-                         " to android.provider.Settings.Secure, returning read-only value.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.Global"
+                        + " to android.provider.Settings.Secure, returning read-only value.");
                 return Secure.getStringForUser(resolver, name, userHandle);
             }
             return sNameValueCache.getStringForUser(resolver, name, userHandle);
@@ -10008,13 +10008,13 @@ public final class Settings {
         public static boolean putStringForUser(ContentResolver resolver,
                 String name, String value, int userHandle) {
             if (LOCAL_LOGV) {
-                Log.v(TAG, "Global.putString(name="  name  ", value="  value
-                         " for "  userHandle);
+                Log.v(TAG, "Global.putString(name=" + name + ", value=" + value
+                        + " for " + userHandle);
             }
             // Global and Secure have the same access policy so we can forward writes
             if (MOVED_TO_SECURE.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.Global"
-                         " to android.provider.Settings.Secure, value is unchanged.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.Global"
+                        + " to android.provider.Settings.Secure, value is unchanged.");
                 return Secure.putStringForUser(resolver, name, value, userHandle);
             }
             return sNameValueCache.putStringForUser(resolver, name, value, userHandle);
@@ -10028,8 +10028,8 @@ public final class Settings {
          */
         public static Uri getUriFor(String name) {
             if (MOVED_TO_SECURE.contains(name)) {
-                Log.w(TAG, "Setting "  name  " has moved from android.provider.Settings.Global"
-                         " to android.provider.Settings.Secure, returning Secure URI.");
+                Log.w(TAG, "Setting " + name + " has moved from android.provider.Settings.Global"
+                        + " to android.provider.Settings.Secure, returning Secure URI.");
                 return Secure.getUriFor(Secure.CONTENT_URI, name);
             }
 
@@ -10350,7 +10350,7 @@ public final class Settings {
          * The content:// style URL for this table
          */
         public static final Uri CONTENT_URI =
-            Uri.parse("content://"  AUTHORITY  "/bookmarks");
+            Uri.parse("content://" + AUTHORITY + "/bookmarks");
 
         /**
          * The row ID.
@@ -10404,7 +10404,7 @@ public final class Settings {
 
         private static final String[] sIntentProjection = { INTENT };
         private static final String[] sShortcutProjection = { ID, SHORTCUT };
-        private static final String sShortcutSelection = SHORTCUT  "=?";
+        private static final String sShortcutSelection = SHORTCUT + "=?";
 
         /**
          * Convenience function to retrieve the bookmarked Intent for a
@@ -10547,7 +10547,7 @@ public final class Settings {
      * @hide
      */
     public static String getGTalkDeviceId(long androidId) {
-        return "android-"  Long.toHexString(androidId);
+        return "android-" + Long.toHexString(androidId);
     }
 
     private static final String[] PM_WRITE_SETTINGS = {
@@ -10563,7 +10563,7 @@ public final class Settings {
 
     /**
      * Performs a strict and comprehensive check of whether a calling package is allowed to
-     * write/modify system settings, as the condition differs for pre-M, M, and
+     * write/modify system settings, as the condition differs for pre-M, M+, and
      * privileged/preinstalled apps. If the provided uid does not match the
      * callingPackage, a negative result will be returned.
      * @hide
@@ -10577,7 +10577,7 @@ public final class Settings {
 
     /**
      * Performs a strict and comprehensive check of whether a calling package is allowed to
-     * write/modify system settings, as the condition differs for pre-M, M, and
+     * write/modify system settings, as the condition differs for pre-M, M+, and
      * privileged/preinstalled apps. If the provided uid does not match the
      * callingPackage, a negative result will be returned. The caller is expected to have
      * the WRITE_SETTINGS permission declared.
@@ -10595,7 +10595,7 @@ public final class Settings {
 
     /**
      * Performs a strict and comprehensive check of whether a calling package is allowed to
-     * change the state of network, as the condition differs for pre-M, M, and
+     * change the state of network, as the condition differs for pre-M, M+, and
      * privileged/preinstalled apps. The caller is expected to have either the
      * CHANGE_NETWORK_STATE or the WRITE_SETTINGS permission declared. Either of these
      * permissions allow changing network state; WRITE_SETTINGS is a runtime permission and
@@ -10619,7 +10619,7 @@ public final class Settings {
 
     /**
      * Performs a strict and comprehensive check of whether a calling package is allowed to
-     * draw on top of other apps, as the conditions differs for pre-M, M, and
+     * draw on top of other apps, as the conditions differs for pre-M, M+, and
      * privileged/preinstalled apps. If the provided uid does not match the callingPackage,
      * a negative result will be returned.
      * @hide
@@ -10633,7 +10633,7 @@ public final class Settings {
 
     /**
      * Performs a strict and comprehensive check of whether a calling package is allowed to
-     * draw on top of other apps, as the conditions differs for pre-M, M, and
+     * draw on top of other apps, as the conditions differs for pre-M, M+, and
      * privileged/preinstalled apps. If the provided uid does not match the callingPackage,
      * a negative result will be returned.
      *
@@ -10701,7 +10701,7 @@ public final class Settings {
         } else {
             exceptionMessage.append(" this permission: ");
         }
-        for (int i = 0; i < permissions.length; i) {
+        for (int i = 0; i < permissions.length; i++) {
             exceptionMessage.append(permissions[i]);
             exceptionMessage.append((i == permissions.length - 1) ? "." : ", ");
         }
