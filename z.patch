@@ -1,0 +1,348 @@
+From 2a07d16fde662101d079fa06a1ce89ebfe6276c5 Mon Sep 17 00:00:00 2001
+From: Alex Cruz <mazdarider23@gmail.com>
+Date: Sun, 6 Nov 2016 20:37:36 +0100
+Subject: [PATCH] Optional screenshot type [1/2]
+
+Change-Id: Iaa579c1f53e504f7dfc3189e1dfb8e399e26da0b
+---
+
+ .../android/systemui/qs/tiles/ScreenshotTile.java  | 62 ++++++++++++++++-----
+ .../com/android/server/policy/GlobalActions.java   | 63 +++++++++++++++-------
+ .../android/server/policy/PhoneWindowManager.java  | 42 ++++++++++++---
+ 4 files changed, 132 insertions(+), 41 deletions(-)
+
+
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/tiles/ScreenshotTile.java b/packages/SystemUI/src/com/android/systemui/qs/tiles/ScreenshotTile.java
+index d1d6695..fcc57bc 100644
+--- a/packages/SystemUI/src/com/android/systemui/qs/tiles/ScreenshotTile.java
++++ b/packages/SystemUI/src/com/android/systemui/qs/tiles/ScreenshotTile.java
+@@ -27,6 +27,8 @@
+ import android.os.Message;
+ import android.os.Messenger;
+ import android.os.RemoteException;
++import android.os.UserHandle;
++import android.provider.Settings;
+ import android.view.View;
+ 
+ import com.android.systemui.R;
+@@ -35,6 +37,9 @@
+ 
+ import com.android.internal.logging.MetricsProto.MetricsEvent;
+ 
++import static android.view.WindowManager.TAKE_SCREENSHOT_FULLSCREEN;
++import static android.view.WindowManager.TAKE_SCREENSHOT_SELECTED_REGION;
++
+ /** Quick settings tile: Screenshot **/
+ public class ScreenshotTile extends QSTile<QSTile.BooleanState> {
+ 
+@@ -42,6 +47,9 @@
+     private final Object mScreenshotLock = new Object();
+     private ServiceConnection mScreenshotConnection = null;
+ 
++    private int mScreenshotFullscreen = TAKE_SCREENSHOT_FULLSCREEN;
++    private int mScreenshotSelectedRegion = TAKE_SCREENSHOT_SELECTED_REGION;
++
+     public ScreenshotTile(Host host) {
+         super(host);
+     }
+@@ -65,7 +73,12 @@ public void handleClick() {
+         } catch (InterruptedException ie) {
+              // Do nothing
+         }
+-        takeScreenshot();
++        if (Settings.System.getInt(mContext.getContentResolver(),
++            Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++        takeScreenshot(mScreenshotSelectedRegion);
++        } else {
++        takeScreenshot(mScreenshotFullscreen);
++        }
+     }
+ 
+     @Override
+@@ -90,9 +103,34 @@ public int getMetricsCategory() {
+         return MetricsEvent.QUICK_SETTINGS;
+     }
+ 
+-    final Runnable mScreenshotTimeout = new Runnable() {
++    class ScreenshotRunnable implements Runnable {
++        private int mScreenshotFullscreen = TAKE_SCREENSHOT_FULLSCREEN;
++        private int mScreenshotSelectedRegion = TAKE_SCREENSHOT_SELECTED_REGION;
++
++        public void setScreenshotType(int screenshotType) {
++            if (Settings.System.getInt(mContext.getContentResolver(),
++                Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++            mScreenshotSelectedRegion = screenshotType;
++            } else {
++            mScreenshotFullscreen = screenshotType;
++            }
++        }
++
+         @Override
+         public void run() {
++        if (Settings.System.getInt(mContext.getContentResolver(),
++              Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++           takeScreenshot(mScreenshotSelectedRegion);
++        } else {
++           takeScreenshot(mScreenshotFullscreen);
++           }
++        }
++    }
++
++    private final ScreenshotRunnable mScreenshotRunnable = new ScreenshotRunnable();
++
++    final Runnable mScreenshotTimeout = new Runnable() {
++        @Override public void run() {
+             synchronized (mScreenshotLock) {
+                 if (mScreenshotConnection != null) {
+                     mContext.unbindService(mScreenshotConnection);
+@@ -102,13 +140,15 @@ public void run() {
+         }
+     };
+ 
+-    private void takeScreenshot() {
++    private void takeScreenshot(final int screenshotType) {
+         synchronized (mScreenshotLock) {
+             if (mScreenshotConnection != null) {
+                 return;
+             }
+-
+-            Intent intent = new Intent(mContext, TakeScreenshotService.class);
++            ComponentName cn = new ComponentName("com.android.systemui",
++                    "com.android.systemui.screenshot.TakeScreenshotService");
++            Intent intent = new Intent();
++            intent.setComponent(cn);
+             ServiceConnection conn = new ServiceConnection() {
+                 @Override
+                 public void onServiceConnected(ComponentName name, IBinder service) {
+@@ -116,9 +156,8 @@ public void onServiceConnected(ComponentName name, IBinder service) {
+                         if (mScreenshotConnection != this) {
+                             return;
+                         }
+-
+                         Messenger messenger = new Messenger(service);
+-                        Message msg = Message.obtain(null, 1);
++                        Message msg = Message.obtain(null, screenshotType);
+                         final ServiceConnection myConn = this;
+                         Handler h = new Handler(mHandler.getLooper()) {
+                             @Override
+@@ -143,14 +182,11 @@ public void handleMessage(Message msg) {
+                         }
+                     }
+                 }
+-
+                 @Override
+-                public void onServiceDisconnected(ComponentName name) {
+-                    // Do nothing here
+-                }
++                public void onServiceDisconnected(ComponentName name) {}
+             };
+-
+-            if (mContext.bindService(intent, conn, mContext.BIND_AUTO_CREATE)) {
++            if (mContext.bindServiceAsUser(
++                    intent, conn, Context.BIND_AUTO_CREATE, UserHandle.CURRENT)) {
+                 mScreenshotConnection = conn;
+                 mHandler.postDelayed(mScreenshotTimeout, 10000);
+             }
+diff --git a/services/core/java/com/android/server/policy/GlobalActions.java b/services/core/java/com/android/server/policy/GlobalActions.java
+index bd0de33..f206c05 100644
+--- a/services/core/java/com/android/server/policy/GlobalActions.java
++++ b/services/core/java/com/android/server/policy/GlobalActions.java
+@@ -104,6 +104,9 @@
+ 
+ import static com.android.internal.util.cm.PowerMenuConstants.*;
+ 
++import static android.view.WindowManager.TAKE_SCREENSHOT_FULLSCREEN;
++import static android.view.WindowManager.TAKE_SCREENSHOT_SELECTED_REGION;
++
+ /**
+  * Helper to show the global actions dialog.  Each item is an {@link Action} that
+  * may show depending on whether the keyguard is showing, and whether the device
+@@ -115,6 +118,11 @@
+ 
+     private static final boolean SHOW_SILENT_TOGGLE = true;
+ 
++    private final Object mScreenshotLock = new Object();
++    private ServiceConnection mScreenshotConnection = null;
++    private int mScreenshotFullscreen = TAKE_SCREENSHOT_FULLSCREEN;
++    private int mScreenshotSelectedRegion = TAKE_SCREENSHOT_SELECTED_REGION;
++
+     private final Context mContext;
+     private final WindowManagerFuncs mWindowManagerFuncs;
+     private final AudioManager mAudioManager;
+@@ -571,7 +579,12 @@ private Action getScreenshotAction() {
+                 R.string.global_action_screenshot) {
+ 
+             public void onPress() {
+-                takeScreenshot();
++                if (Settings.System.getInt(mContext.getContentResolver(),
++                       Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++                    takeScreenshot(mScreenshotSelectedRegion);
++                } else {
++                    takeScreenshot(mScreenshotFullscreen);
++                }
+             }
+ 
+             public boolean showDuringKeyguard() {
+@@ -808,8 +821,31 @@ public boolean showBeforeProvisioning() {
+      * functions needed for taking screenhots.
+      * This leverages the built in ICS screenshot functionality
+      */
+-    final Object mScreenshotLock = new Object();
+-    ServiceConnection mScreenshotConnection = null;
++    class ScreenshotRunnable implements Runnable {
++        private int mScreenshotFullscreen = TAKE_SCREENSHOT_FULLSCREEN;
++        private int mScreenshotSelectedRegion = TAKE_SCREENSHOT_SELECTED_REGION;
++
++        public void setScreenshotType(int screenshotType) {
++            if (Settings.System.getInt(mContext.getContentResolver(),
++                Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++            mScreenshotSelectedRegion = screenshotType;
++            } else {
++            mScreenshotFullscreen = screenshotType;
++            }
++        }
++
++        @Override
++        public void run() {
++        if (Settings.System.getInt(mContext.getContentResolver(),
++              Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++           takeScreenshot(mScreenshotSelectedRegion);
++        } else {
++           takeScreenshot(mScreenshotFullscreen);
++           }
++        }
++    }
++
++    private final ScreenshotRunnable mScreenshotRunnable = new ScreenshotRunnable();
+ 
+     final Runnable mScreenshotTimeout = new Runnable() {
+         @Override public void run() {
+@@ -822,7 +858,7 @@ public boolean showBeforeProvisioning() {
+         }
+     };
+ 
+-    private void takeScreenshot() {
++    private void takeScreenshot(final int screenshotType) {
+         synchronized (mScreenshotLock) {
+             if (mScreenshotConnection != null) {
+                 return;
+@@ -839,7 +875,7 @@ public void onServiceConnected(ComponentName name, IBinder service) {
+                             return;
+                         }
+                         Messenger messenger = new Messenger(service);
+-                        Message msg = Message.obtain(null, 1);
++                        Message msg = Message.obtain(null, screenshotType);
+                         final ServiceConnection myConn = this;
+                         Handler h = new Handler(mHandler.getLooper()) {
+                             @Override
+@@ -856,20 +892,6 @@ public void handleMessage(Message msg) {
+                         msg.replyTo = new Messenger(h);
+                         msg.arg1 = msg.arg2 = 0;
+ 
+-                        /*  remove for the time being
+-                        if (mStatusBar != null && mStatusBar.isVisibleLw())
+-                            msg.arg1 = 1;
+-                        if (mNavigationBar != null && mNavigationBar.isVisibleLw())
+-                            msg.arg2 = 1;
+-                         */
+-
+-                        /* wait for the dialog box to close */
+-                        try {
+-                            Thread.sleep(1000);
+-                        } catch (InterruptedException ie) {
+-                            // Do nothing
+-                        }
+-
+                         /* take the screenshot */
+                         try {
+                             messenger.send(msg);
+@@ -881,7 +903,8 @@ public void handleMessage(Message msg) {
+                 @Override
+                 public void onServiceDisconnected(ComponentName name) {}
+             };
+-            if (mContext.bindService(intent, conn, Context.BIND_AUTO_CREATE)) {
++            if (mContext.bindServiceAsUser(
++                    intent, conn, Context.BIND_AUTO_CREATE, UserHandle.CURRENT)) {
+                 mScreenshotConnection = conn;
+                 mHandler.postDelayed(mScreenshotTimeout, 10000);
+             }
+diff --git a/services/core/java/com/android/server/policy/PhoneWindowManager.java b/services/core/java/com/android/server/policy/PhoneWindowManager.java
+index fabc150..5191bf3 100644
+--- a/services/core/java/com/android/server/policy/PhoneWindowManager.java
++++ b/services/core/java/com/android/server/policy/PhoneWindowManager.java
+@@ -1612,7 +1612,12 @@ private void interceptScreenshotChord() {
+                             + SCREENSHOT_CHORD_DEBOUNCE_DELAY_MILLIS) {
+                 mScreenshotChordVolumeDownKeyConsumed = true;
+                 cancelPendingPowerKeyAction();
+-                mScreenshotRunnable.setScreenshotType(TAKE_SCREENSHOT_FULLSCREEN);
++                if (Settings.System.getInt(mContext.getContentResolver(),
++                    Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++                    mScreenshotRunnable.setScreenshotType(TAKE_SCREENSHOT_SELECTED_REGION);
++                } else {
++                    mScreenshotRunnable.setScreenshotType(TAKE_SCREENSHOT_FULLSCREEN);
++                }
+                 mHandler.postDelayed(mScreenshotRunnable, getScreenshotChordLongPressDelay());
+             }
+         }
+@@ -1661,15 +1666,26 @@ public void run() {
+     };
+ 
+     private class ScreenshotRunnable implements Runnable {
+-        private int mScreenshotType = TAKE_SCREENSHOT_FULLSCREEN;
++        private int mScreenshotFullscreen = TAKE_SCREENSHOT_FULLSCREEN;
++        private int mScreenshotSelectedRegion = TAKE_SCREENSHOT_SELECTED_REGION;
+ 
+         public void setScreenshotType(int screenshotType) {
+-            mScreenshotType = screenshotType;
++	    if (Settings.System.getInt(mContext.getContentResolver(),
++                Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++            mScreenshotSelectedRegion = screenshotType;
++            } else {
++            mScreenshotFullscreen = screenshotType;
++            }
+         }
+ 
+         @Override
+         public void run() {
+-            takeScreenshot(mScreenshotType);
++            if (Settings.System.getInt(mContext.getContentResolver(),
++                Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++                takeScreenshot(mScreenshotSelectedRegion);
++            } else {
++                takeScreenshot(mScreenshotFullscreen);
++            }
+         }
+     }
+ 
+@@ -3823,9 +3839,14 @@ public long interceptKeyBeforeDispatching(WindowState win, KeyEvent event, int p
+         } else if (keyCode == KeyEvent.KEYCODE_S && event.isMetaPressed()
+                 && event.isCtrlPressed()) {
+             if (down && repeatCount == 0) {
+-                int type = event.isShiftPressed() ? TAKE_SCREENSHOT_SELECTED_REGION
+-                        : TAKE_SCREENSHOT_FULLSCREEN;
+-                mScreenshotRunnable.setScreenshotType(type);
++                int selectedregion = TAKE_SCREENSHOT_SELECTED_REGION;
++                int fullscreen = TAKE_SCREENSHOT_FULLSCREEN;
++                if (Settings.System.getInt(mContext.getContentResolver(),
++                    Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++                        mScreenshotRunnable.setScreenshotType(selectedregion);
++                } else {
++                        mScreenshotRunnable.setScreenshotType(fullscreen);
++                }
+                 mHandler.post(mScreenshotRunnable);
+                 return -1;
+             }
+@@ -3885,7 +3906,12 @@ public long interceptKeyBeforeDispatching(WindowState win, KeyEvent event, int p
+             }
+         } else if (keyCode == KeyEvent.KEYCODE_SYSRQ) {
+             if (down && repeatCount == 0) {
+-                mScreenshotRunnable.setScreenshotType(TAKE_SCREENSHOT_FULLSCREEN);
++                if (Settings.System.getInt(mContext.getContentResolver(),
++                    Settings.System.SCREENSHOT_TYPE, 0) == 1) {
++                    mScreenshotRunnable.setScreenshotType(TAKE_SCREENSHOT_SELECTED_REGION);
++                } else {
++                    mScreenshotRunnable.setScreenshotType(TAKE_SCREENSHOT_FULLSCREEN);
++                }
+                 mHandler.post(mScreenshotRunnable);
+             }
+             return -1;
