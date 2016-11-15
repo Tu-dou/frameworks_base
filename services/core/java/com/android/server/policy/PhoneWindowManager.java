@@ -3484,12 +3484,10 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             } else if (mNavigationBarPosition == NAV_BAR_RIGHT) {
                 if (transit == TRANSIT_EXIT
                         || transit == TRANSIT_HIDE) {
-                    return mNavigationBarLeftInLandscape
-                            ? R.anim.dock_left_exit : R.anim.dock_right_exit;
+                    return R.anim.dock_right_exit;
                 } else if (transit == TRANSIT_ENTER
                         || transit == TRANSIT_SHOW) {
-                    return mNavigationBarLeftInLandscape
-                            ? R.anim.dock_left_enter : R.anim.dock_right_enter;
+                    return R.anim.dock_right_enter;
                 }
             } else if (mNavigationBarPosition == NAV_BAR_LEFT) {
                 if (transit == TRANSIT_EXIT
@@ -3960,6 +3958,11 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                 } else {
                         mScreenshotRunnable.setScreenshotType(fullscreen);
                 }
+                int type = (event.isShiftPressed() ||
+                    Settings.System.getInt(mContext.getContentResolver(),
+                    Settings.System.SCREENSHOT_TYPE, 0) == 1) ?
+                    TAKE_SCREENSHOT_SELECTED_REGION : TAKE_SCREENSHOT_FULLSCREEN;
+                mScreenshotRunnable.setScreenshotType(type);
                 mHandler.post(mScreenshotRunnable);
                 return -1;
             }
@@ -5114,7 +5117,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
 
     private int navigationBarPosition(int displayWidth, int displayHeight, int displayRotation) {
         if (mNavigationBarCanMove && displayWidth > displayHeight) {
-            if (displayRotation == Surface.ROTATION_270) {
+            if (mNavigationBarLeftInLandscape) {
                 return NAV_BAR_LEFT;
             } else {
                 return NAV_BAR_RIGHT;
@@ -6741,17 +6744,6 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                             break;
                         }
                     }
-                }
-                if (mUseTvRouting) {
-                    // On TVs, defer special key handlings to
-                    // {@link interceptKeyBeforeDispatching()}.
-                    result |= ACTION_PASS_TO_USER;
-                } else if ((result & ACTION_PASS_TO_USER) == 0) {
-                    // If we aren't passing to the user and no one else
-                    // handled it send it to the session manager to
-                    // figure out.
-                    MediaSessionLegacyHelper.getHelper(mContext)
-                            .sendVolumeKeyEvent(event, true);
                 }
 
                 // Disable music and volume control when used as wake key
