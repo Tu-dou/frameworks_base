@@ -3250,7 +3250,8 @@ final class ActivityStack {
     }
 
     private void adjustFocusedActivityLocked(ActivityRecord r, String reason) {
-        if (!mStackSupervisor.isFocusedStack(this) || mService.mFocusedActivity != r) {
+        if (!mStackSupervisor.isFocusedStack(this) || (mService.mFocusedActivity != r
+                && mService.mFocusedActivity != null)) {
             return;
         }
 
@@ -5000,7 +5001,8 @@ final class ActivityStack {
             if (focusedStack && topTask) {
                 // Give the latest time to ensure foreground task can be sorted
                 // at the first, because lastActiveTime of creating task is 0.
-                ci.lastActiveTime = System.currentTimeMillis();
+                // Only do this if the clock didn't run backwards, though.
+                ci.lastActiveTime = Math.max(ci.lastActiveTime, System.currentTimeMillis());
                 topTask = false;
             }
 

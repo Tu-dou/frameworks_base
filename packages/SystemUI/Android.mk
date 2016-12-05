@@ -34,10 +34,11 @@ LOCAL_STATIC_JAVA_LIBRARIES := \
     framework-protos \
     SystemUI-proto-tags \
     org.cyanogenmod.platform.internal \
+    uicommon \
 	trail-drawing \
     rebound \
     libSudaSdk
-    
+
 LOCAL_JAVA_LIBRARIES := telephony-common org.dirtyunicorns.utils
 LOCAL_FULL_LIBS_MANIFEST_FILES := $(LOCAL_PATH)/AndroidManifest_cm.xml
 
